@@ -25,7 +25,13 @@ Thumbs.db
 # ONNX models (download separately)
 *.onnx
 
-# Mobile build artifacts
-mobile/ios/build/
-mobile/android/build/
-mobile/android/.gradle/
+# Mobile build artifacts (new paths)
+apps/ios/CFSMobile/libcfs_mobile.a
+apps/ios/CFSMobile.xcodeproj/project.xcworkspace/
+apps/ios/CFSMobile.xcodeproj/xcuserdata/
+
+# General binary libraries
+*.a
+*.so
+*.dylib
+*.dll
