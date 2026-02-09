@@ -9,7 +9,7 @@ use uuid::Uuid;
 use std::collections::HashMap;
 
 /// Search result with relevance score
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     /// The matching chunk
     pub chunk: Chunk,
@@ -17,6 +17,17 @@ pub struct SearchResult {
     pub score: f32,
     /// Path to the source document
     pub doc_path: PathBuf,
+}
+
+/// Result of an LLM generation
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GenerationResult {
+    /// The generated answer
+    pub answer: String,
+    /// The context used to generate the answer
+    pub context: String,
+    /// Latency in milliseconds
+    pub latency_ms: u64,
 }
 
 use std::sync::{Arc, Mutex};
@@ -142,12 +153,62 @@ impl QueryEngine {
         self.graph.clone()
     }
 
+    /// Generate an answer using the knowledge graph and a local LLM (Phase 2)
+    pub async fn generate_answer(&self, query: &str) -> Result<GenerationResult> {
+        let start = std::time::Instant::now();
+        info!("Generating answer for: '{}'", query);
+
+        // 1. Search for relevant chunks
+        // Note: search is currently sync, which is fine since it's CPU/DB bound.
+        let results = self.search(query, 5)?;
+        
+        // 2. Assemble context
+        use cfs_core::context_assembler::{ContextAssembler, ScoredChunk};
+        let assembler = ContextAssembler::new(2000); // 2000 approx tokens budget
+        let scored_chunks: Vec<ScoredChunk> = results.iter().map(|r| ScoredChunk {
+            chunk: r.chunk.clone(),
+            score: r.score,
+        }).collect();
+        
+        let context = assembler.assemble(scored_chunks);
+        
+        // 3. Prepare Prompt
+        let prompt = format!(
+            "Context information is below.\n---------------------\n{}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {}\nAnswer: ",
+            context, query
+        );
+
+        // 4. Call Ollama (Async)
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "model": "mistral",
+            "prompt": prompt,
+            "stream": false
+        });
+
+        let res = client.post("http://localhost:11434/api/generate")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e: reqwest::Error| CfsError::Embedding(format!("Ollama request failed: {}", e)))?;
+
+        let json: serde_json::Value = res.json()
+            .await
+            .map_err(|e: reqwest::Error| CfsError::Parse(e.to_string()))?;
+            
+        let answer = json["response"].as_str().ok_or_else(|| CfsError::Parse("Invalid Ollama response".into()))?.to_string();
+
+        Ok(GenerationResult {
+            answer,
+            context,
+            latency_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
     /// Chat with context from the knowledge graph
-    /// 
-    /// Note: This is a placeholder for Phase 2.
     pub fn chat(&self, _query: &str, _history: &[Message]) -> Result<String> {
-        // TODO: Implement LLM integration in Phase 2
-        Err(CfsError::NotFound("Chat functionality is scheduled for Phase 2".into()))
+        // This will be expanded later in Phase 2
+        Err(CfsError::NotFound("Use generate_answer for Phase 2 initial integration".into()))
     }
 }
 

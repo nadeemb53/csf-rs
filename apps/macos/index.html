@@ -43,6 +43,27 @@
             color: #666;
             font-size: 0.8em;
         }
+
+        .context-box {
+            background: #f4f4f4;
+            border: 1px solid #ccc;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 0.85em;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            margin-top: 10px;
+            border-radius: 4px;
+        }
+
+        .ai-response {
+            background: #eefbff;
+            border-left: 4px solid #007aff;
+            padding: 15px;
+            margin-top: 15px;
+            line-height: 1.5;
+        }
     </style>
 </head>
 
@@ -70,8 +91,20 @@
     <div class="card">
         <h3>3. Hybrid Search</h3>
         <input type="text" id="queryInput" placeholder="Enter semantic or keyword query...">
-        <button onclick="runQuery()">Search</button>
+        <button onclick="runQuery(event)">Search</button>
+        <button onclick="generateAI(event)">Research with AI</button>
         <div id="results"></div>
+
+        <div id="aiSection" style="display: none; margin-top: 20px;">
+            <h4>AI Response <span id="aiStats" class="score"></span></h4>
+            <div id="aiResponse" class="ai-response"></div>
+
+            <details style="margin-top: 10px;">
+                <summary style="cursor: pointer; font-size: 0.9em; color: #666;">View Assembled Context (Read-only
+                    substrate)</summary>
+                <div id="aiContext" class="context-box"></div>
+            </details>
+        </div>
     </div>
 
     <div class="card">
@@ -110,18 +143,22 @@
             alert(res);
         }
 
-        async function runQuery() {
-            const btn = event.target;
+        async function runQuery(event) {
+            console.log("runQuery triggered");
+            const btn = event ? event.target : null;
             const input = document.getElementById('queryInput');
             const text = input.value;
             if (!text) return;
 
             const container = document.getElementById('results');
+            const aiSection = document.getElementById('aiSection');
             container.innerHTML = '<em>Searching...</em>';
-            btn.disabled = true;
+            aiSection.style.display = 'none'; // Hide AI section when doing normal search
+            if (btn) btn.disabled = true;
 
             try {
                 const results = await invoke('perform_query', { text });
+                console.log("Search results received:", results.length);
                 container.innerHTML = '';
 
                 if (results.length === 0) {
@@ -138,9 +175,45 @@
                     container.appendChild(div);
                 });
             } catch (e) {
+                console.error("Search error:", e);
                 container.innerHTML = `<p style="color: red;">Error: ${e}</p>`;
             } finally {
-                btn.disabled = false;
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function generateAI(event) {
+            console.log("generateAI triggered");
+            const btn = event ? event.target : null;
+            const input = document.getElementById('queryInput');
+            const text = input.value;
+            if (!text) return;
+
+            const aiSection = document.getElementById('aiSection');
+            const aiResponse = document.getElementById('aiResponse');
+            const aiContext = document.getElementById('aiContext');
+            const aiStats = document.getElementById('aiStats');
+            const resultsContainer = document.getElementById('results');
+
+            aiSection.style.display = 'block';
+            aiResponse.innerHTML = '<em>Consulting local LLM...</em>';
+            aiContext.innerText = 'Assembling context from verified filesystem...';
+            aiStats.innerText = '';
+            resultsContainer.innerHTML = ''; // Clear search results to focus on AI
+            if (btn) btn.disabled = true;
+
+            try {
+                console.log("Invoking generate_answer...");
+                const res = await invoke('generate_answer', { text });
+                console.log("AI Answer received (length):", res.answer.length);
+                aiResponse.innerText = res.answer;
+                aiContext.innerText = res.context;
+                aiStats.innerText = `(${res.latency_ms}ms)`;
+            } catch (e) {
+                console.error("AI Generation error:", e);
+                aiResponse.innerHTML = `<p style="color: red;">Error: ${e}</p>`;
+            } finally {
+                if (btn) btn.disabled = false;
             }
         }
 
@@ -149,7 +222,7 @@
             const container = document.getElementById('documentList');
             container.innerHTML = '<em>Loading...</em>';
             btn.disabled = true;
-            
+
             try {
                 const docs = await invoke('list_documents');
                 container.innerHTML = '';

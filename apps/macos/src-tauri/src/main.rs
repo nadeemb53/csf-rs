@@ -100,6 +100,22 @@ async fn perform_query(state: State<'_, AppState>, text: String) -> Result<Vec<U
 }
 
 #[tauri::command]
+async fn generate_answer(state: State<'_, AppState>, text: String) -> Result<cfs_query::GenerationResult> {
+    let qe = {
+        let app_lock = state.app.lock().unwrap();
+        if let Some(app) = app_lock.as_ref() {
+            let graph = app.graph();
+            let embedder = Arc::new(EmbeddingEngine::new()?);
+            QueryEngine::new(graph, embedder)
+        } else {
+            return Err(cfs_core::CfsError::NotFound("App not initialized".into()));
+        }
+    }; // app_lock is dropped here
+    
+    qe.generate_answer(&text).await
+}
+
+#[tauri::command]
 async fn trigger_sync(_state: State<'_, AppState>) -> Result<String> {
     // In V0, sync happens in background. Here we just confirm.
     Ok("Sync is active in background".into())
@@ -155,6 +171,7 @@ fn main() {
             add_watch_dir,
             get_stats,
             perform_query,
+            generate_answer,
             trigger_sync,
             list_documents,
             get_document_chunks
