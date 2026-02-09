@@ -47,6 +47,23 @@ class CfsBridge {
         defer { cfs_free_string(cStr) }
         return String(cString: cStr)
     }
+
+    /// Initialize the LLM with a GGUF model file
+    func initLlm(modelPath: String) -> Int32 {
+        guard let context = context else { return -1 }
+        return cfs_init_llm(context, modelPath)
+    }
+
+    /// Generate an AI answer using RAG
+    func generate(query: String) -> GenerationResult? {
+        guard let context = context else { return nil }
+        guard let cJson = cfs_generate(context, query) else { return nil }
+        defer { cfs_free_string(cJson) }
+
+        let json = String(cString: cJson)
+        let data = json.data(using: .utf8)!
+        return try? JSONDecoder().decode(GenerationResult.self, from: data)
+    }
 }
 
 struct SearchResult: Codable, Identifiable {
@@ -56,10 +73,22 @@ struct SearchResult: Codable, Identifiable {
     let doc_path: String
 }
 
+struct GenerationResult: Codable {
+    let answer: String
+    let context: String
+    let latency_ms: Int
+}
+
 // C FFI Prototypes (Must match cfs-mobile/src/lib.rs)
 // Note: In a real project, these are generated in a bridging header.
 @_silgen_name("cfs_init")
 func cfs_init(_ db_path: UnsafePointer<Int8>) -> OpaquePointer?
+
+@_silgen_name("cfs_init_llm")
+func cfs_init_llm(_ ctx: OpaquePointer, _ model_path: UnsafePointer<Int8>) -> Int32
+
+@_silgen_name("cfs_generate")
+func cfs_generate(_ ctx: OpaquePointer, _ query: UnsafePointer<Int8>) -> UnsafeMutablePointer<Int8>?
 
 @_silgen_name("cfs_sync")
 func cfs_sync(_ ctx: OpaquePointer, _ relay_url: UnsafePointer<Int8>, _ key_hex: UnsafePointer<Int8>) -> Int32

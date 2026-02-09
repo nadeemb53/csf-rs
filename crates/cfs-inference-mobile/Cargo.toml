@@ -1,0 +1,16 @@
+[package]
+name = "cfs-inference-mobile"
+description = "Local LLM inference for CFS mobile (llama.cpp based)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cfs-core = { path = "../cfs-core" }
+cfs-query = { path = "../cfs-query" }
+llama-cpp-2 = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }

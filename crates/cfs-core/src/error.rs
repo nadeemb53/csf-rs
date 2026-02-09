@@ -37,6 +37,9 @@ pub enum CfsError {
 
     #[error("Verification failed: {0}")]
     Verification(String),
+
+    #[error("Inference error: {0}")]
+    Inference(String),
 }
 
 fn serialize_io_error<S>(error: &std::io::Error, serializer: S) -> std::result::Result<S::Ok, S::Error>

@@ -12,7 +12,7 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::runtime::Runtime;
-use tracing::error;
+use tracing::{error, info};
 use uuid::Uuid;
 
 static LAST_ERROR: OnceLock<Mutex<String>> = OnceLock::new();
@@ -29,9 +29,11 @@ fn set_last_error(msg: &str) {
 
 /// Opaque context for mobile operations
 pub struct CfsContext {
-    rt: Runtime,
-    query_engine: Arc<QueryEngine>,
-    graph: Arc<Mutex<GraphStore>>,
+    pub rt: Runtime,
+    pub query_engine: Mutex<Arc<QueryEngine>>,
+    pub graph: Arc<Mutex<GraphStore>>,
+    pub embedder: Arc<EmbeddingEngine>,
+    pub generator: Mutex<Option<Arc<QueryEngine>>>,
 }
 
 /// Initialize the CFS context
@@ -49,10 +51,24 @@ pub unsafe extern "C" fn cfs_init(db_path: *const c_char) -> *mut CfsContext {
         Err(_) => return ptr::null_mut(),
     };
 
+    // Initialize tracing once
+    static INIT_LOG: std::sync::Once = std::sync::Once::new();
+    INIT_LOG.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .init();
+    });
+
+    println!("[CFS-Mobile] cfs_init for path: {}", path_str);
+
     // Initialize runtime
     let rt = match Runtime::new() {
         Ok(rt) => rt,
-        Err(_) => return ptr::null_mut(),
+        Err(e) => {
+            println!("[CFS-Mobile] Failed to create runtime: {}", e);
+            return ptr::null_mut();
+        }
     };
 
     // Initialize components (synchronous operations)
@@ -60,6 +76,7 @@ pub unsafe extern "C" fn cfs_init(db_path: *const c_char) -> *mut CfsContext {
     let graph = match GraphStore::open(&path_str) {
         Ok(g) => g,
         Err(e) => {
+            println!("[CFS-Mobile] Failed to open graph store: {}", e);
             error!("Failed to open graph store: {}", e);
             return ptr::null_mut();
         }
@@ -70,6 +87,7 @@ pub unsafe extern "C" fn cfs_init(db_path: *const c_char) -> *mut CfsContext {
     let embedder = match EmbeddingEngine::new() {
         Ok(e) => e,
         Err(e) => {
+            println!("[CFS-Mobile] Failed to init embeddings: {}", e);
             error!("Failed to init embeddings: {}", e);
             return ptr::null_mut();
         }
@@ -77,14 +95,17 @@ pub unsafe extern "C" fn cfs_init(db_path: *const c_char) -> *mut CfsContext {
     let embedder_arc = Arc::new(embedder);
 
     // 3. Create QueryEngine
-    let query_engine = Arc::new(QueryEngine::new(graph_arc.clone(), embedder_arc));
+    let query_engine = Arc::new(QueryEngine::new(graph_arc.clone(), embedder_arc.clone()));
 
     let ctx = Box::new(CfsContext {
         rt,
-        query_engine,
+        query_engine: Mutex::new(query_engine),
         graph: graph_arc,
+        embedder: embedder_arc,
+        generator: Mutex::new(None),
     });
-    
+
+    println!("[CFS-Mobile] Context created successfully.");
     Box::into_raw(ctx)
 }
 
@@ -304,8 +325,9 @@ pub unsafe extern "C" fn cfs_query(
         Err(_) => return ptr::null_mut(),
     };
 
+    let qe = ctx.query_engine.lock().unwrap().clone();
     let res: Result<Vec<SimpleSearchResult>> = (|| {
-        let results = ctx.query_engine.search(query_str, 5)?;
+        let results = qe.search(query_str, 5)?;
         
         // Convert to simplified struct for JSON
         let simple_results: Vec<SimpleSearchResult> = results.into_iter().map(|r| SimpleSearchResult {
@@ -358,8 +380,9 @@ pub unsafe extern "C" fn cfs_get_chunks(
         Err(_) => return ptr::null_mut(),
     };
 
+    let qe = ctx.query_engine.lock().unwrap().clone();
     let res: Result<Vec<SimpleSearchResult>> = (|| {
-        let results = ctx.query_engine.get_chunks_for_document(doc_id)?;
+        let results = qe.get_chunks_for_document(doc_id)?;
         
         // Convert to simplified struct for JSON
         let simple_results: Vec<SimpleSearchResult> = results.into_iter().map(|r| SimpleSearchResult {
@@ -381,6 +404,171 @@ pub unsafe extern "C" fn cfs_get_chunks(
             error!("Get chunks failed: {}", e);
             let c_str = CString::new("[]").unwrap_or_default();
             c_str.into_raw()
+        }
+    }
+}
+
+/// Test LLM backend initialization only (for debugging)
+///
+/// # Safety
+/// Returns 0 on success, negative on failure.
+#[no_mangle]
+pub unsafe extern "C" fn cfs_test_llm_backend() -> i32 {
+    println!("[CFS-Mobile] Testing llama.cpp backend initialization...");
+
+    match std::panic::catch_unwind(|| {
+        use llama_cpp_2::llama_backend::LlamaBackend;
+        println!("[CFS-Mobile] Calling LlamaBackend::init()...");
+        let result = LlamaBackend::init();
+        println!("[CFS-Mobile] LlamaBackend::init() returned");
+        result
+    }) {
+        Ok(Ok(_backend)) => {
+            println!("[CFS-Mobile] Backend initialized successfully!");
+            0
+        }
+        Ok(Err(e)) => {
+            let msg = format!("Backend init failed: {}", e);
+            println!("[CFS-Mobile] {}", msg);
+            set_last_error(&msg);
+            -1
+        }
+        Err(_) => {
+            println!("[CFS-Mobile] Backend init PANICKED!");
+            set_last_error("Backend initialization panicked");
+            -2
+        }
+    }
+}
+
+/// Initialize the LLM generator for the context
+///
+/// # Safety
+/// `ctx` must be valid. `model_path` must be a valid C string pointing to a GGUF model file.
+#[no_mangle]
+pub unsafe extern "C" fn cfs_init_llm(ctx: *mut CfsContext, model_path: *const c_char) -> i32 {
+    if ctx.is_null() || model_path.is_null() {
+        return -1;
+    }
+
+    let ctx = &*ctx;
+    let model_path_str = match CStr::from_ptr(model_path).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return -2,
+    };
+
+    println!("[CFS-Mobile] cfs_init_llm called with path: {}", model_path_str);
+    info!("[CFS-Mobile] cfs_init_llm called with path: {}", model_path_str);
+
+    // Create local generator (doesn't load model yet - lazy init)
+    let generator = Box::new(cfs_inference_mobile::LocalGenerator::new(model_path_str.into()));
+
+    // Try to initialize the model now to catch errors early
+    println!("[CFS-Mobile] Pre-initializing model...");
+    if let Err(e) = generator.initialize() {
+        let msg = format!("Model initialization failed: {}", e);
+        println!("[CFS-Mobile] {}", msg);
+        set_last_error(&msg);
+        return -4;
+    }
+    println!("[CFS-Mobile] Model pre-initialized successfully");
+
+    // Create QueryEngine with the generator
+    let qe = cfs_query::QueryEngine::new(ctx.graph.clone(), ctx.embedder.clone())
+        .with_generator(generator);
+
+    match ctx.generator.lock() {
+        Ok(mut gen_lock) => {
+            *gen_lock = Some(Arc::new(qe));
+            println!("[CFS-Mobile] cfs_init_llm completed successfully.");
+            info!("[CFS-Mobile] cfs_init_llm completed successfully.");
+            0
+        }
+        Err(_) => {
+            println!("[CFS-Mobile] cfs_init_llm: Mutex poisoned!");
+            error!("[CFS-Mobile] cfs_init_llm: Mutex poisoned!");
+            set_last_error("Internal error: Generator mutex poisoned.");
+            -3
+        }
+    }
+}
+
+/// Generate an answer using the local LLM
+///
+/// Returns a JSON string with the generation result that must be freed with `cfs_free_string`.
+///
+/// # Safety
+/// `ctx` must be valid. `query` must be a valid C string.
+#[no_mangle]
+pub unsafe extern "C" fn cfs_generate(ctx: *mut CfsContext, query: *const c_char) -> *mut c_char {
+    if ctx.is_null() || query.is_null() {
+        return ptr::null_mut();
+    }
+
+    let ctx = &*ctx;
+    let query_str = match CStr::from_ptr(query).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return ptr::null_mut(),
+    };
+
+    println!("[CFS-Mobile] cfs_generate called for query: {}", query_str);
+    info!("[CFS-Mobile] cfs_generate called for query: {}", query_str);
+
+    // Get the generator QueryEngine
+    let qe = {
+        match ctx.generator.lock() {
+            Ok(gen_lock) => {
+                match gen_lock.as_ref() {
+                    Some(v) => v.clone(),
+                    None => {
+                        println!("[CFS-Mobile] cfs_generate: Generator not initialized.");
+                        error!("[CFS-Mobile] cfs_generate: Generator not initialized.");
+                        set_last_error("LLM generator not initialized. Call cfs_init_llm first.");
+                        return ptr::null_mut();
+                    }
+                }
+            }
+            Err(_) => {
+                println!("[CFS-Mobile] cfs_generate: Mutex poisoned!");
+                error!("[CFS-Mobile] cfs_generate: Mutex poisoned!");
+                set_last_error("Internal error: Generator mutex poisoned.");
+                return ptr::null_mut();
+            }
+        }
+    };
+
+    println!("[CFS-Mobile] Starting async generation...");
+    info!("[CFS-Mobile] Starting async generation...");
+
+    // Run generation with panic catching
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ctx.rt.block_on(async { qe.generate_answer(&query_str).await })
+    }));
+
+    let res = match caught {
+        Ok(r) => r,
+        Err(_) => {
+            println!("[CFS-Mobile] cfs_generate: Panicked during async execution!");
+            error!("[CFS-Mobile] cfs_generate: Panicked during async execution!");
+            set_last_error("Critical error: AI engine panicked during generation.");
+            return ptr::null_mut();
+        }
+    };
+
+    match res {
+        Ok(gen_res) => {
+            info!(
+                "[CFS-Mobile] Generation successful. Latency: {}ms",
+                gen_res.latency_ms
+            );
+            let json = serde_json::to_string(&gen_res).unwrap_or_else(|_| "{}".to_string());
+            let c_str = CString::new(json).unwrap_or_default();
+            c_str.into_raw()
+        }
+        Err(e) => {
+            error!("[CFS-Mobile] Generation failed: {}", e);
+            set_last_error(&format!("Generation failed: {}", e));
+            ptr::null_mut()
         }
     }
 }

@@ -9,6 +9,7 @@ license.workspace = true
 cfs-core = { path = "../cfs-core" }
 cfs-graph = { path = "../cfs-graph" }
 cfs-embeddings = { path = "../cfs-embeddings" }
+async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 hex = { workspace = true }

@@ -106,12 +106,17 @@ async fn generate_answer(state: State<'_, AppState>, text: String) -> Result<cfs
         if let Some(app) = app_lock.as_ref() {
             let graph = app.graph();
             let embedder = Arc::new(EmbeddingEngine::new()?);
-            QueryEngine::new(graph, embedder)
+            // Use Ollama as the generator for desktop
+            let generator = Box::new(cfs_query::OllamaGenerator::new(
+                "http://localhost:11434".into(),
+                "mistral".into(),
+            ));
+            QueryEngine::new(graph, embedder).with_generator(generator)
         } else {
             return Err(cfs_core::CfsError::NotFound("App not initialized".into()));
         }
     }; // app_lock is dropped here
-    
+
     qe.generate_answer(&text).await
 }
 

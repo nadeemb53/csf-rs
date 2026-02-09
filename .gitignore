@@ -22,8 +22,9 @@ Thumbs.db
 # Logs
 *.log
 
-# ONNX models (download separately)
+# ONNX and GGUF models (download separately)
 *.onnx
+*.gguf
 
 # Mobile build artifacts (new paths)
 apps/ios/CFSMobile/libcfs_mobile.a

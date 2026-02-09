@@ -8,14 +8,18 @@ struct ContentView: View {
     @State private var syncStatus = "Ready"
     @State private var stats = "Docs: 0, Chunks: 0"
     @State private var isSearching = false
-    
+    @State private var aiAnswer = ""
+    @State private var aiMetrics = ""
+    @State private var isLlmInitialized = false
+
     // In V0, we use a single instance of the bridge
     private let bridge: CfsBridge
-    
+
     init() {
         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         let dbPath = paths[0].appendingPathComponent("mobile_graph.db").path
         self.bridge = CfsBridge(dbPath: dbPath)
+        // LLM initialization is deferred to first use (on background thread)
     }
     
     var body: some View {
@@ -34,10 +38,30 @@ struct ContentView: View {
                         .padding(8)
                         .background(Color.secondary.opacity(0.1))
                         .cornerRadius(4)
-                    
-                    Text(stats)
-                        .font(.caption2)
-                        .foregroundColor(.blue)
+
+                    HStack {
+                        Text(stats)
+                        Spacer()
+                        if !aiMetrics.isEmpty {
+                            Text(aiMetrics)
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.blue)
+                }
+
+                if !aiAnswer.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("AI Response")
+                            .font(.headline)
+                        Text(aiAnswer)
+                            .padding()
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 
                 HStack {
@@ -72,12 +96,19 @@ struct ContentView: View {
                         .textInputAutocapitalization(.none)
                     
                     HStack {
-                        Button("Run Query") {
+                        Button("Query") {
                             runQuery()
                         }
                         .buttonStyle(.bordered)
                         .disabled(isSearching || queryText.isEmpty)
-                        
+
+                        Button("Ask AI") {
+                            askAi()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .disabled(isSearching || queryText.isEmpty)
+
                         if isSearching {
                             ProgressView()
                                 .padding(.leading, 8)
@@ -129,12 +160,12 @@ struct ContentView: View {
         guard !queryText.isEmpty else { return }
         syncStatus = "Searching..."
         isSearching = true
-        
+
         // Run on background thread
         Task {
             let searchResults = bridge.query(text: queryText)
             let error = bridge.getLastError()
-            
+
             await MainActor.run {
                 self.results = searchResults
                 self.isSearching = false
@@ -146,6 +177,79 @@ struct ContentView: View {
                     syncStatus = "Found \(searchResults.count) results"
                 }
             }
+        }
+    }
+
+    func askAi() {
+        guard !queryText.isEmpty else { return }
+
+        aiAnswer = ""
+        aiMetrics = ""
+        syncStatus = "Thinking..."
+        isSearching = true
+
+        // Capture values needed for background work
+        let query = queryText
+        let needsInit = !isLlmInitialized
+
+        Task {
+            // Do LLM work on background queue
+            let result: (answer: String?, latency: Int, error: String?) = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    // Initialize LLM if needed
+                    if needsInit {
+                        let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+                        var modelPath = paths[0].appendingPathComponent("smollm2.gguf").path
+
+                        if !FileManager.default.fileExists(atPath: modelPath) {
+                            if let bundlePath = Bundle.main.path(forResource: "smollm2", ofType: "gguf") {
+                                modelPath = bundlePath
+                                print("[CFS-iOS] Using bundled model at: \(modelPath)")
+                            }
+                        } else {
+                            print("[CFS-iOS] Using Documents model at: \(modelPath)")
+                        }
+
+                        guard FileManager.default.fileExists(atPath: modelPath) else {
+                            print("[CFS-iOS] No model file found!")
+                            continuation.resume(returning: (nil, 0, "No model file. Add smollm2.gguf to Documents."))
+                            return
+                        }
+
+                        print("[CFS-iOS] Initializing LLM...")
+                        let res = self.bridge.initLlm(modelPath: modelPath)
+                        print("[CFS-iOS] LLM init result: \(res)")
+
+                        if res != 0 {
+                            let error = self.bridge.getLastError()
+                            continuation.resume(returning: (nil, 0, "LLM init failed: \(error)"))
+                            return
+                        }
+                    }
+
+                    // Generate answer
+                    print("[CFS-iOS] Generating answer for: \(query)")
+                    if let res = self.bridge.generate(query: query) {
+                        print("[CFS-iOS] Generation successful: \(res.latency_ms)ms")
+                        continuation.resume(returning: (res.answer, res.latency_ms, nil))
+                    } else {
+                        let error = self.bridge.getLastError()
+                        print("[CFS-iOS] Generation failed: \(error)")
+                        continuation.resume(returning: (nil, 0, error))
+                    }
+                }
+            }
+
+            // Update UI on main actor
+            if let answer = result.answer {
+                self.isLlmInitialized = true
+                self.aiAnswer = answer
+                self.aiMetrics = "\(result.latency)ms"
+                self.syncStatus = "AI generated answer"
+            } else {
+                self.syncStatus = "AI Error: \(result.error ?? "Unknown")"
+            }
+            self.isSearching = false
         }
     }
 

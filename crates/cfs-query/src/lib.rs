@@ -4,6 +4,7 @@
 
 use cfs_core::{Chunk, CfsError, Result};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 use uuid::Uuid;
 use std::collections::HashMap;
@@ -30,12 +31,63 @@ pub struct GenerationResult {
     pub latency_ms: u64,
 }
 
-use std::sync::{Arc, Mutex};
+/// Trait for LLM text generation (async)
+#[async_trait::async_trait]
+pub trait LLMGenerator: Send + Sync {
+    /// Generate text from a prompt
+    async fn generate(&self, prompt: &str) -> Result<String>;
+}
+
+/// Ollama-based LLM generator (for desktop/server use)
+pub struct OllamaGenerator {
+    base_url: String,
+    model: String,
+}
+
+impl OllamaGenerator {
+    /// Create a new Ollama generator
+    pub fn new(base_url: String, model: String) -> Self {
+        Self { base_url, model }
+    }
+}
+
+#[async_trait::async_trait]
+impl LLMGenerator for OllamaGenerator {
+    async fn generate(&self, prompt: &str) -> Result<String> {
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "model": self.model,
+            "prompt": prompt,
+            "stream": false
+        });
+
+        let url = format!("{}/api/generate", self.base_url);
+        let res = client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| CfsError::Embedding(format!("Ollama request failed: {}", e)))?;
+
+        let json: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| CfsError::Parse(e.to_string()))?;
+
+        let answer = json["response"]
+            .as_str()
+            .ok_or_else(|| CfsError::Parse("Invalid Ollama response".into()))?
+            .to_string();
+
+        Ok(answer)
+    }
+}
 
 /// Query engine for semantic search
 pub struct QueryEngine {
     graph: Arc<Mutex<cfs_graph::GraphStore>>,
     embedder: Arc<cfs_embeddings::EmbeddingEngine>,
+    generator: Option<Box<dyn LLMGenerator>>,
 }
 
 impl QueryEngine {
@@ -47,7 +99,14 @@ impl QueryEngine {
         Self {
             graph,
             embedder,
+            generator: None,
         }
+    }
+
+    /// Set the LLM generator for RAG
+    pub fn with_generator(mut self, generator: Box<dyn LLMGenerator>) -> Self {
+        self.generator = Some(generator);
+        self
     }
 
     /// Search for relevant chunks using a hybrid (semantic + lexical) approach
@@ -153,50 +212,64 @@ impl QueryEngine {
         self.graph.clone()
     }
 
-    /// Generate an answer using the knowledge graph and a local LLM (Phase 2)
+    /// Generate an answer using the knowledge graph and an LLM
     pub async fn generate_answer(&self, query: &str) -> Result<GenerationResult> {
         let start = std::time::Instant::now();
         info!("Generating answer for: '{}'", query);
 
         // 1. Search for relevant chunks
-        // Note: search is currently sync, which is fine since it's CPU/DB bound.
         let results = self.search(query, 5)?;
-        
+
         // 2. Assemble context
         use cfs_core::context_assembler::{ContextAssembler, ScoredChunk};
         let assembler = ContextAssembler::new(2000); // 2000 approx tokens budget
-        let scored_chunks: Vec<ScoredChunk> = results.iter().map(|r| ScoredChunk {
-            chunk: r.chunk.clone(),
-            score: r.score,
-        }).collect();
-        
+        let scored_chunks: Vec<ScoredChunk> = results
+            .iter()
+            .map(|r| ScoredChunk {
+                chunk: r.chunk.clone(),
+                score: r.score,
+            })
+            .collect();
+
         let context = assembler.assemble(scored_chunks);
-        
+
         // 3. Prepare Prompt
         let prompt = format!(
             "Context information is below.\n---------------------\n{}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {}\nAnswer: ",
             context, query
         );
 
-        // 4. Call Ollama (Async)
-        let client = reqwest::Client::new();
-        let payload = serde_json::json!({
-            "model": "mistral",
-            "prompt": prompt,
-            "stream": false
-        });
+        // 4. Generate answer using configured generator or fallback to Ollama
+        let answer = if let Some(ref generator) = self.generator {
+            generator.generate(&prompt).await?
+        } else {
+            // Fallback to Ollama for backward compatibility
+            let client = reqwest::Client::new();
+            let payload = serde_json::json!({
+                "model": "mistral",
+                "prompt": prompt,
+                "stream": false
+            });
 
-        let res = client.post("http://localhost:11434/api/generate")
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e: reqwest::Error| CfsError::Embedding(format!("Ollama request failed: {}", e)))?;
+            let res = client
+                .post("http://localhost:11434/api/generate")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e: reqwest::Error| {
+                    CfsError::Embedding(format!("Ollama request failed: {}", e))
+                })?;
 
-        let json: serde_json::Value = res.json()
-            .await
-            .map_err(|e: reqwest::Error| CfsError::Parse(e.to_string()))?;
-            
-        let answer = json["response"].as_str().ok_or_else(|| CfsError::Parse("Invalid Ollama response".into()))?.to_string();
+            let json: serde_json::Value = res
+                .json()
+                .await
+                .map_err(|e: reqwest::Error| CfsError::Parse(e.to_string()))?;
+
+            json["response"]
+                .as_str()
+                .ok_or_else(|| CfsError::Parse("Invalid Ollama response".into()))?
+                .to_string()
+        };
 
         Ok(GenerationResult {
             answer,

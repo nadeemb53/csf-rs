@@ -15,8 +15,10 @@ cfs-sync = { path = "../cfs-sync" }
 cfs-relay-client = { path = "../cfs-relay-client" }
 cfs-query = { path = "../cfs-query" }
 cfs-embeddings = { path = "../cfs-embeddings" }
+cfs-inference-mobile = { path = "../cfs-inference-mobile" }
 hex = "0.4"
 tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
