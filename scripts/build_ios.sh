@@ -10,7 +10,13 @@ BUILD_TARGET="${1:-sim}"
 case "$BUILD_TARGET" in
     sim|simulator)
         echo "Building cfs-mobile for iOS Simulator (aarch64)..."
+        echo "NOTE: Disabling Metal for simulator (residency sets not supported)"
         rustup target add aarch64-apple-ios-sim
+        # Disable Metal for simulator - it doesn't support residency sets
+        # The cmake crate respects CMAKE_BUILD_PARALLEL_LEVEL and we pass GGML_METAL=OFF
+        GGML_METAL=OFF \
+        CMAKE_BUILD_PARALLEL_LEVEL=8 \
+        LLAMA_METAL=OFF \
         cargo build -p cfs-mobile --target aarch64-apple-ios-sim --release
         LIB_PATH="target/aarch64-apple-ios-sim/release/libcfs_mobile.a"
         ;;

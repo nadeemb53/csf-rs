@@ -1,6 +1,6 @@
 # Cognitive Filesystem (CFS)
 
-![CFS macOS and iOS Apps](images/cfs.png)
+![CFS macOS and iOS Apps](images/llm-cfs.png)
 
 Cognitive Filesystem (CFS) is a **local-first, deterministic semantic storage and retrieval system** written in rust, designed to index personal documents, keep them continuously up to date, and make them searchable across devices with cryptographic verification.
 
@@ -13,6 +13,7 @@ CFS currently provides a complete end-to-end pipeline for:
 * Hybrid (lexical + vector) retrieval
 * Deterministic context assembly
 * Encrypted, verifiable synchronization
+* 100% Local AI (LLM) Inference on iOS
 * Desktop and mobile parity
 
 No cloud inference or external AI APIs are required.
@@ -92,10 +93,14 @@ No cloud inference or external AI APIs are required.
 
 ### iOS App
 
-* Read-only local graph
-* Encrypted state pull
-* Hybrid query support
-* State root verification against desktop
+* Read-only local graph (V0)
+* Encrypted state pull with Merkle-root verification
+* Hybrid query support (Semantic + Lexical)
+* **Local AI Integration**: On-device LLM inference via `llama.cpp`
+* **Trust & Transparency**: 
+    * "End-to-End Private" badge confirms local work
+    * State Verification view explains deterministic state roots
+    * Verified latency metrics for every generation
 
 Both apps are intentionally minimal and expose internal state rather than hiding it.
 
@@ -109,6 +114,7 @@ Both apps are intentionally minimal and expose internal state rather than hiding
 * `cfs-embeddings` — Local embedding generation (CPU-only)
 * `cfs-graph` — SQLite + HNSW hybrid storage engine
 * `cfs-query` — Hybrid retrieval, RRF fusion, and context assembly
+* `cfs-inference-mobile` — Local LLM inference engine (`llama.cpp` + GGUF)
 * `cfs-sync` — Merkle tree diffing, encryption, and state convergence
 * `cfs-relay-client` — HTTP client for encrypted blob synchronization
 * `cfs-desktop` — Desktop-specific ingestion and watcher logic

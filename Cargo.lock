@@ -724,6 +724,7 @@ dependencies = [
  "cfs-relay-client",
  "cfs-sync",
  "hex",
+ "llama-cpp-2",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3219,8 +3220,6 @@ dependencies = [
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.133"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a180dfa6d6f9d1df1e031bcdf0464bbad4f9b326395bfd28f2fa539d8cbc9c2b"
 dependencies = [
  "bindgen",
  "cc",

@@ -147,4 +147,37 @@ impl SyncManager {
 
         Ok(())
     }
+
+    /// Pull changes from the relay and apply to local graph
+    pub async fn pull(&self) -> Result<usize> {
+        let remote_roots = self.relay_client.get_roots(None).await?;
+        let mut applied_count = 0;
+        
+        let local_head = {
+            let graph = self.graph.lock().unwrap();
+            graph.get_latest_root()?.map(|r| r.hash)
+        };
+        
+        for root_hex in remote_roots {
+            let root_bytes = hex::decode(&root_hex).map_err(|e| CfsError::Parse(e.to_string()))?;
+            if Some(root_bytes.as_slice().try_into().unwrap()) == local_head {
+                continue; 
+            }
+            
+            let payload = self.relay_client.get_diff(&root_hex).await?;
+            let diff = self.crypto.decrypt_diff(&payload)?;
+            
+            {
+                let mut graph = self.graph.lock().unwrap();
+                graph.apply_diff(&diff)?;
+            }
+            applied_count += 1;
+        }
+
+        if applied_count > 0 {
+            info!("Pulled {} new diffs from relay", applied_count);
+        }
+
+        Ok(applied_count)
+    }
 }

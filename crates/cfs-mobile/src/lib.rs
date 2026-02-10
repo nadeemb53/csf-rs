@@ -5,6 +5,7 @@
 use cfs_core::{CfsError, Result};
 use cfs_embeddings::EmbeddingEngine;
 use cfs_graph::GraphStore;
+use cfs_inference_mobile::LocalGenerator;
 use cfs_query::QueryEngine;
 use cfs_relay_client::RelayClient;
 use std::ffi::{CStr, CString};
@@ -409,36 +410,11 @@ pub unsafe extern "C" fn cfs_get_chunks(
 }
 
 /// Test LLM backend initialization only (for debugging)
-///
-/// # Safety
-/// Returns 0 on success, negative on failure.
+/// Note: This is now a no-op since we can't init backend twice
 #[no_mangle]
 pub unsafe extern "C" fn cfs_test_llm_backend() -> i32 {
-    println!("[CFS-Mobile] Testing llama.cpp backend initialization...");
-
-    match std::panic::catch_unwind(|| {
-        use llama_cpp_2::llama_backend::LlamaBackend;
-        println!("[CFS-Mobile] Calling LlamaBackend::init()...");
-        let result = LlamaBackend::init();
-        println!("[CFS-Mobile] LlamaBackend::init() returned");
-        result
-    }) {
-        Ok(Ok(_backend)) => {
-            println!("[CFS-Mobile] Backend initialized successfully!");
-            0
-        }
-        Ok(Err(e)) => {
-            let msg = format!("Backend init failed: {}", e);
-            println!("[CFS-Mobile] {}", msg);
-            set_last_error(&msg);
-            -1
-        }
-        Err(_) => {
-            println!("[CFS-Mobile] Backend init PANICKED!");
-            set_last_error("Backend initialization panicked");
-            -2
-        }
-    }
+    println!("[CFS-Mobile] Backend test skipped (will init with model)");
+    0
 }
 
 /// Initialize the LLM generator for the context
@@ -447,48 +423,88 @@ pub unsafe extern "C" fn cfs_test_llm_backend() -> i32 {
 /// `ctx` must be valid. `model_path` must be a valid C string pointing to a GGUF model file.
 #[no_mangle]
 pub unsafe extern "C" fn cfs_init_llm(ctx: *mut CfsContext, model_path: *const c_char) -> i32 {
-    if ctx.is_null() || model_path.is_null() {
+    println!("[CFS-Mobile] === cfs_init_llm START ===");
+
+    if ctx.is_null() {
+        println!("[CFS-Mobile] ERROR: ctx is null");
+        return -1;
+    }
+    if model_path.is_null() {
+        println!("[CFS-Mobile] ERROR: model_path is null");
         return -1;
     }
 
     let ctx = &*ctx;
+    println!("[CFS-Mobile] Context OK");
+
     let model_path_str = match CStr::from_ptr(model_path).to_str() {
         Ok(s) => s.to_string(),
-        Err(_) => return -2,
+        Err(e) => {
+            println!("[CFS-Mobile] ERROR: Invalid model path string: {}", e);
+            return -2;
+        }
     };
 
-    println!("[CFS-Mobile] cfs_init_llm called with path: {}", model_path_str);
-    info!("[CFS-Mobile] cfs_init_llm called with path: {}", model_path_str);
+    println!("[CFS-Mobile] Model path: {}", model_path_str);
 
-    // Create local generator (doesn't load model yet - lazy init)
-    let generator = Box::new(cfs_inference_mobile::LocalGenerator::new(model_path_str.into()));
-
-    // Try to initialize the model now to catch errors early
-    println!("[CFS-Mobile] Pre-initializing model...");
-    if let Err(e) = generator.initialize() {
-        let msg = format!("Model initialization failed: {}", e);
-        println!("[CFS-Mobile] {}", msg);
-        set_last_error(&msg);
-        return -4;
+    // Check file exists
+    let path = std::path::Path::new(&model_path_str);
+    if !path.exists() {
+        println!("[CFS-Mobile] ERROR: Model file does not exist");
+        set_last_error("Model file does not exist");
+        return -3;
     }
-    println!("[CFS-Mobile] Model pre-initialized successfully");
 
-    // Create QueryEngine with the generator
+    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    println!("[CFS-Mobile] Model file exists, size: {} bytes", file_size);
+
+    // Wrap everything in panic catch
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        println!("[CFS-Mobile] Creating LocalGenerator...");
+        let generator = Box::new(LocalGenerator::new(model_path_str.clone().into()));
+        println!("[CFS-Mobile] LocalGenerator created");
+
+        println!("[CFS-Mobile] Calling generator.initialize()...");
+        generator.initialize()?;
+        println!("[CFS-Mobile] Generator initialized!");
+
+        Ok::<_, cfs_core::CfsError>(generator)
+    }));
+
+    let generator = match result {
+        Ok(Ok(gen)) => {
+            println!("[CFS-Mobile] Generator ready");
+            gen
+        }
+        Ok(Err(e)) => {
+            let msg = format!("Model initialization failed: {}", e);
+            println!("[CFS-Mobile] {}", msg);
+            set_last_error(&msg);
+            return -4;
+        }
+        Err(panic_info) => {
+            let msg = format!("PANIC during initialization: {:?}", panic_info);
+            println!("[CFS-Mobile] {}", msg);
+            set_last_error("Panic during LLM initialization");
+            return -5;
+        }
+    };
+
+    println!("[CFS-Mobile] Creating QueryEngine with generator...");
     let qe = cfs_query::QueryEngine::new(ctx.graph.clone(), ctx.embedder.clone())
         .with_generator(generator);
+    println!("[CFS-Mobile] QueryEngine created");
 
     match ctx.generator.lock() {
         Ok(mut gen_lock) => {
             *gen_lock = Some(Arc::new(qe));
-            println!("[CFS-Mobile] cfs_init_llm completed successfully.");
-            info!("[CFS-Mobile] cfs_init_llm completed successfully.");
+            println!("[CFS-Mobile] === cfs_init_llm SUCCESS ===");
             0
         }
         Err(_) => {
-            println!("[CFS-Mobile] cfs_init_llm: Mutex poisoned!");
-            error!("[CFS-Mobile] cfs_init_llm: Mutex poisoned!");
+            println!("[CFS-Mobile] ERROR: Mutex poisoned!");
             set_last_error("Internal error: Generator mutex poisoned.");
-            -3
+            -6
         }
     }
 }

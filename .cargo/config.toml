@@ -1,0 +1,9 @@
+# Cargo configuration for CFS
+
+# For iOS simulator builds, we need to help cmake find things
+# Note: Metal is auto-detected and we can't easily disable it via env vars
+# The simulator doesn't support Metal residency sets - use real device for AI features
+
+[env]
+# These will be picked up by the llama-cpp-sys-2 build.rs
+# Unfortunately, cmake auto-detects Metal and the Rust crate doesn't expose a disable option

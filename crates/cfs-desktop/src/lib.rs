@@ -22,6 +22,7 @@ pub struct DesktopApp {
     watch_dirs: Vec<PathBuf>,
     graph: Arc<Mutex<GraphStore>>,
     sync_manager: Arc<SyncManager>,
+    status: Arc<Mutex<String>>,
 }
 
 /// Worker that processes files
@@ -30,6 +31,7 @@ struct IngestionWorker {
     embedder: Arc<EmbeddingEngine>,
     chunker: Chunker,
     sync_manager: Arc<SyncManager>,
+    status: Arc<Mutex<String>>,
 }
 
 impl IngestionWorker {
@@ -53,6 +55,8 @@ impl IngestionWorker {
     }
 
     fn process_file(&self, path: &PathBuf) -> Result<()> {
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+        *self.status.lock().unwrap() = format!("Parsing {}", filename);
         let start_total = std::time::Instant::now();
         
         // 1. Read metadata
@@ -69,11 +73,13 @@ impl IngestionWorker {
         let doc = Document::new(path.clone(), text.as_bytes(), mtime);
         
         // 4. Chunk
+        *self.status.lock().unwrap() = format!("Chunking {}", filename);
         let start_chunk = std::time::Instant::now();
         let chunks = self.chunker.chunk(doc.id, &text)?;
         let chunk_duration = start_chunk.elapsed();
 
         // 5. Embed (with Hierarchical Hash calculation)
+        *self.status.lock().unwrap() = format!("Embedding {}", filename);
         let start_embed = std::time::Instant::now();
         let chunk_hashes: Vec<[u8; 32]> = chunks.iter().map(|c| c.text_hash).collect();
         let h_hash = Document::compute_hierarchical_hash(&chunk_hashes);
@@ -109,6 +115,7 @@ impl IngestionWorker {
         }
         let store_duration = start_store.elapsed();
         let total_duration = start_total.elapsed();
+        *self.status.lock().unwrap() = "Idle".to_string();
         
         info!(
             "Processed {:?}: chunks={}, h_hash={}, parse={:?}, chunk={:?}, embed={:?}, store={:?}, total={:?}",
@@ -147,6 +154,7 @@ impl DesktopApp {
             watch_dirs: Vec::new(),
             graph: graph_arc,
             sync_manager,
+            status: Arc::new(Mutex::new("Idle".to_string())),
         })
     }
 
@@ -176,6 +184,7 @@ impl DesktopApp {
             embedder,
             chunker: Chunker::new(ChunkConfig::default()),
             sync_manager: self.sync_manager.clone(),
+            status: self.status.clone(),
         };
 
         // Initial crawl
@@ -194,10 +203,16 @@ impl DesktopApp {
         // Start sync loop
         let sync_mgr = self.sync_manager.clone();
         tokio::spawn(async move {
-            info!("Starting background sync loop (every 30s)");
+            info!("Starting background sync loop (every 5s)");
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                info!("Triggering scheduled sync push...");
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                
+                // Pull first
+                if let Err(e) = sync_mgr.pull().await {
+                    tracing::error!("Sync pull failed: {}", e);
+                }
+
+                // Periodic push
                 if let Err(e) = sync_mgr.push().await {
                     tracing::error!("Sync push failed: {}", e);
                 }
@@ -214,6 +229,10 @@ impl DesktopApp {
 
     pub fn graph(&self) -> Arc<Mutex<GraphStore>> {
         self.graph.clone()
+    }
+
+    pub fn status(&self) -> String {
+        self.status.lock().unwrap().clone()
     }
 }
 

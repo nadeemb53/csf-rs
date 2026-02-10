@@ -93,3 +93,7 @@ tauri-build = "2.0"
 
 # Testing
 tempfile = "3.14"
+
+[patch.crates-io]
+# Use local patched version of llama-cpp-sys-2 to support GGML_METAL=OFF for simulator
+llama-cpp-sys-2 = { path = "patches/llama-cpp-sys-2" }

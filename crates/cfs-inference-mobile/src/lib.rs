@@ -9,7 +9,9 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::data_array::LlamaTokenDataArray;
+use llama_cpp_2::token::LlamaToken;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -72,8 +74,16 @@ impl LocalGenerator {
             })?;
         println!("[LocalGenerator] Backend initialized");
 
-        // Load model with mobile-optimized params
+        // Load model - use CPU only on simulator (Metal residency sets not supported)
         println!("[LocalGenerator] Loading model...");
+        #[cfg(target_os = "ios")]
+        let model_params = {
+            // Check if running on simulator by checking for x86_64 or specific env
+            // For now, force CPU to avoid Metal residency set issues on simulator
+            println!("[LocalGenerator] Using CPU-only mode for compatibility");
+            LlamaModelParams::default().with_n_gpu_layers(0)
+        };
+        #[cfg(not(target_os = "ios"))]
         let model_params = LlamaModelParams::default();
 
         let model = LlamaModel::load_from_file(&backend, &self.model_path, &model_params)
@@ -120,9 +130,10 @@ impl LocalGenerator {
             .ok_or_else(|| CfsError::Inference("Model not initialized".into()))?;
 
         // Create context with mobile-friendly settings
+        let n_batch = 512;
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(2048)) // Smaller context for mobile
-            .with_n_batch(512);
+            .with_n_batch(n_batch);
 
         let mut ctx = model
             .new_context(backend, ctx_params)
@@ -139,30 +150,48 @@ impl LocalGenerator {
             max_tokens
         );
 
-        // Create batch and add tokens
-        let mut batch = LlamaBatch::new(2048, 1);
-        for (i, token) in tokens.iter().enumerate() {
-            let is_last = i == tokens.len() - 1;
-            batch
-                .add(*token, i as i32, &[0], is_last)
-                .map_err(|e| CfsError::Inference(format!("Failed to add token to batch: {}", e)))?;
+        // Decode initial batch in chunks to respect n_batch limit
+        let mut batch = LlamaBatch::new(n_batch as usize, 1);
+        let mut n_past = 0;
+        for chunk in tokens.chunks(n_batch as usize) {
+            batch.clear();
+            for (i, token) in chunk.iter().enumerate() {
+                let is_last = i == chunk.len() - 1;
+                batch
+                    .add(*token, (n_past + i) as i32, &[0], is_last)
+                    .map_err(|e| CfsError::Inference(format!("Failed to add token to batch: {}", e)))?;
+            }
+            ctx.decode(&mut batch)
+                .map_err(|e| CfsError::Inference(format!("Initial decode failed: {}", e)))?;
+            n_past += chunk.len();
         }
-
-        // Decode initial batch
-        ctx.decode(&mut batch)
-            .map_err(|e| CfsError::Inference(format!("Initial decode failed: {}", e)))?;
 
         // Generate tokens
         let mut output_tokens = Vec::new();
         let mut n_cur = tokens.len();
+
+        // Create a stateful sampling chain
+        let mut sampler = LlamaSampler::chain_simple([
+            LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
+            LlamaSampler::temp(0.8),
+            LlamaSampler::top_p(0.9, 1),
+            LlamaSampler::dist(0), // Seed 0 for deterministic sampling for now
+        ]);
+
+        // Accept prompt tokens to initialize penalty state
+        sampler.accept_many(&tokens);
 
         for _ in 0..max_tokens {
             // Get logits for the last token
             let candidates = ctx.candidates_ith(batch.n_tokens() - 1);
             let mut candidates_data = LlamaTokenDataArray::from_iter(candidates, false);
 
-            // Sample greedily (use the token data array's method)
-            let new_token = candidates_data.sample_token_greedy();
+            // Apply the sampler chain to the candidates
+            sampler.apply(&mut candidates_data);
+
+            let new_token = candidates_data
+                .selected_token()
+                .expect("Sampler failed to select a token");
 
             // Check for EOS
             if model.is_eog_token(new_token) {
@@ -170,6 +199,7 @@ impl LocalGenerator {
             }
 
             output_tokens.push(new_token);
+            sampler.accept(new_token);
 
             // Prepare next batch
             batch.clear();
@@ -220,7 +250,7 @@ impl cfs_query::LLMGenerator for LocalGenerator {
             model: self.model.clone(),
         };
 
-        tokio::task::spawn_blocking(move || generator.generate(&prompt_owned, 256))
+        tokio::task::spawn_blocking(move || generator.generate(&prompt_owned, 1024))
             .await
             .map_err(|e| CfsError::Inference(format!("Generation task failed: {}", e)))?
     }

@@ -48,6 +48,11 @@ class CfsBridge {
         return String(cString: cStr)
     }
 
+    /// Test if llama.cpp backend can initialize (for debugging)
+    func testLlmBackend() -> Int32 {
+        return cfs_test_llm_backend()
+    }
+
     /// Initialize the LLM with a GGUF model file
     func initLlm(modelPath: String) -> Int32 {
         guard let context = context else { return -1 }
@@ -83,6 +88,9 @@ struct GenerationResult: Codable {
 // Note: In a real project, these are generated in a bridging header.
 @_silgen_name("cfs_init")
 func cfs_init(_ db_path: UnsafePointer<Int8>) -> OpaquePointer?
+
+@_silgen_name("cfs_test_llm_backend")
+func cfs_test_llm_backend() -> Int32
 
 @_silgen_name("cfs_init_llm")
 func cfs_init_llm(_ ctx: OpaquePointer, _ model_path: UnsafePointer<Int8>) -> Int32

@@ -16,6 +16,7 @@ cfs-relay-client = { path = "../cfs-relay-client" }
 cfs-query = { path = "../cfs-query" }
 cfs-embeddings = { path = "../cfs-embeddings" }
 cfs-inference-mobile = { path = "../cfs-inference-mobile" }
+llama-cpp-2 = { workspace = true }
 hex = "0.4"
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }

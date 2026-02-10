@@ -22,118 +22,165 @@ struct ContentView: View {
         // LLM initialization is deferred to first use (on background thread)
     }
     
+    @State private var showingSettings = false
+    
     var body: some View {
-        Vroot {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("CFS iOS (V0)")
-                    .font(.largeTitle)
-                    .bold()
-                
-                Group {
-                    Text("State Root")
-                        .font(.headline)
-                    Text(stateRoot)
-                        .font(.caption)
-                        .monospaced()
-                        .padding(8)
-                        .background(Color.secondary.opacity(0.1))
-                        .cornerRadius(4)
-
-                    HStack {
-                        Text(stats)
-                        Spacer()
-                        if !aiMetrics.isEmpty {
-                            Text(aiMetrics)
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(.orange)
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundColor(.blue)
-                }
-
-                if !aiAnswer.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("AI Response")
-                            .font(.headline)
-                        Text(aiAnswer)
-                            .padding()
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(8)
-                    }
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text("Relay URL")
-                            .font(.caption)
-                        TextField("http://...", text: $relayUrl)
-                            .textFieldStyle(.roundedBorder)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.none)
-                    }
-                    
-                    Button(action: {
-                        pullSync()
-                    }) {
-                        Label("Pull", systemImage: "arrow.down.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                
-                Text(syncStatus)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-                
-                Divider()
-                
-                VStack(alignment: .leading) {
-                    TextField("Search chunks...", text: $queryText)
+        NavigationView {
+            VStack(spacing: 0) {
+                // 1. Search Bar at Top
+                VStack(spacing: 8) {
+                    TextField("Search your files or ask AI...", text: $queryText)
                         .textFieldStyle(.roundedBorder)
+                        .padding(.horizontal)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.none)
-                    
-                    HStack {
-                        Button("Query") {
-                            runQuery()
+                        .onSubmit { runQuery() }
+
+                    HStack(spacing: 12) {
+                        Button(action: runQuery) {
+                            Text("Search")
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                         .disabled(isSearching || queryText.isEmpty)
 
-                        Button("Ask AI") {
-                            askAi()
+                        Button(action: askAi) {
+                            HStack {
+                                if isSearching && aiAnswer.isEmpty {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    Image(systemName: "sparkles")
+                                    Text("Ask AI")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.orange)
+                        .tint(.indigo)
                         .disabled(isSearching || queryText.isEmpty)
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.vertical, 12)
+                .background(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.05), radius: 5, y: 5)
 
-                        if isSearching {
-                            ProgressView()
-                                .padding(.leading, 8)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // 2. Privacy & Determinism Badge (New)
+                        HStack {
+                            Label("End-to-End Private", systemImage: "lock.shield.fill")
+                                .font(.caption.bold())
+                                .foregroundColor(.green)
+                            Spacer()
+                            NavigationLink(destination: VerificationView(stateRoot: stateRoot)) {
+                                HStack(spacing: 4) {
+                                    Text("Verify State")
+                                    Image(systemName: "checkmark.seal")
+                                }
+                                .font(.caption.bold())
+                                .foregroundColor(.indigo)
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+
+                        // 3. AI Response Section
+                        if !aiAnswer.isEmpty || (isSearching && aiAnswer.isEmpty) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Label("AI Answer", systemImage: "sparkles")
+                                        .font(.headline)
+                                        .foregroundColor(.indigo)
+                                    Spacer()
+                                    if !aiMetrics.isEmpty {
+                                        Text(aiMetrics)
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+
+                                if isSearching && aiAnswer.isEmpty {
+                                    HStack {
+                                        ProgressView()
+                                        Text("Reading your files...")
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.vertical)
+                                } else {
+                                    Text(aiAnswer)
+                                        .font(.body)
+                                        .lineSpacing(4)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: false)
+                                }
+                            }
+                            .padding()
+                            .background(Color.indigo.opacity(0.05))
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.indigo.opacity(0.1), lineWidth: 1)
+                            )
+                            .padding(.horizontal)
+                        }
+
+                        // Status message
+                        if !syncStatus.isEmpty && syncStatus != "Ready" {
+                            Text(syncStatus)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal)
+                        }
+
+                        // 4. Search Results
+                        if !results.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Relevant Files")
+                                    .font(.headline)
+                                    .padding(.horizontal)
+
+                                ForEach(results) { res in
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text(res.text)
+                                            .font(.subheadline)
+                                            .lineLimit(4)
+                                        
+                                        HStack {
+                                            Image(systemName: "doc.text")
+                                            Text(res.doc_path.components(separatedBy: "/").last ?? res.doc_path)
+                                            Spacer()
+                                            Text("Score: \(String(format: "%.2f", res.score))")
+                                        }
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.blue)
+                                    }
+                                    .padding()
+                                    .background(Color.secondary.opacity(0.05))
+                                    .cornerRadius(8)
+                                    .padding(.horizontal)
+                                }
+                            }
                         }
                     }
+                    .padding(.bottom, 20)
                 }
-                
-                List(results) { res in
-                    VStack(alignment: .leading) {
-                        Text("Score: \(String(format: "%.4f", res.score))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(res.text)
-                            .font(.body)
-                        Text(res.doc_path)
-                            .font(.caption2)
-                            .foregroundColor(.blue)
+            }
+            .navigationTitle("CFS Mobile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showingSettings = true }) {
+                        Image(systemName: "gear")
                     }
                 }
-                .listStyle(.plain)
             }
-            .padding()
+            .sheet(isPresented: $showingSettings) {
+                SettingsView(relayUrl: $relayUrl, stateRoot: stateRoot, stats: stats, onSync: pullSync)
+            }
         }
     }
-    
     func pullSync() {
         syncStatus = "Syncing..."
         let keyHex = "0101010101010101010101010101010101010101010101010101010101010101"
@@ -198,6 +245,18 @@ struct ContentView: View {
                 DispatchQueue.global(qos: .userInitiated).async {
                     // Initialize LLM if needed
                     if needsInit {
+                        // First test if llama.cpp backend works at all
+                        print("[CFS-iOS] Testing llama.cpp backend...")
+                        let backendTest = self.bridge.testLlmBackend()
+                        print("[CFS-iOS] Backend test result: \(backendTest)")
+
+                        if backendTest != 0 {
+                            let error = self.bridge.getLastError()
+                            continuation.resume(returning: (nil, 0, "Backend test failed: \(error)"))
+                            return
+                        }
+                        print("[CFS-iOS] Backend test passed!")
+
                         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
                         var modelPath = paths[0].appendingPathComponent("smollm2.gguf").path
 
@@ -216,7 +275,7 @@ struct ContentView: View {
                             return
                         }
 
-                        print("[CFS-iOS] Initializing LLM...")
+                        print("[CFS-iOS] Initializing LLM with model...")
                         let res = self.bridge.initLlm(modelPath: modelPath)
                         print("[CFS-iOS] LLM init result: \(res)")
 
@@ -262,6 +321,104 @@ struct ContentView: View {
             let chunks = dict["chunks"] ?? 0
             let embs = dict["embeddings"] ?? 0
             stats = "Documents: \(docs), Chunks: \(chunks), Embeddings: \(embs)"
+        }
+    }
+} // End of ContentView
+
+struct VerificationView: View {
+    let stateRoot: String
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Trust & Transparency")
+                        .font(.largeTitle.bold())
+                    Text("CFS ensures your data is private, deterministic, and verifiable.")
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("Deterministic State", systemImage: "circle.grid.hex.fill")
+                        .font(.headline)
+                    Text("The State Root represents the mathematical 'thumbprint' of your entire knowledge graph. Because CFS is deterministic, identical files will always produce the exact same root across any device.")
+                        .font(.subheadline)
+                    
+                    Text(stateRoot)
+                        .font(.system(.caption, design: .monospaced))
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(8)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("100% Local AI", systemImage: "cpu")
+                        .font(.headline)
+                    Text("Artificial Intelligence runs entirely on this device. Your queries and file contents are never sent to a server for processing. This ensures zero data leakage even while using advanced LLM features.")
+                        .font(.subheadline)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("Verifiable Sync", systemImage: "arrow.left.and.right.circle.fill")
+                        .font(.headline)
+                    Text("When you sync with your Mac, CFS only exchanges encrypted 'diffs'. The State Root is used to verify that both devices have perfectly synchronized states without needing to trust the relay server.")
+                        .font(.subheadline)
+                }
+
+                Spacer()
+            }
+            .padding()
+        }
+        .navigationTitle("Verification")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct SettingsView: View {
+    @Binding var relayUrl: String
+    let stateRoot: String
+    let stats: String
+    let onSync: () -> Void
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section("Relay Configuration") {
+                    TextField("Relay URL", text: $relayUrl)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.none)
+                    Button("Trigger Sync", action: onSync)
+                }
+
+                Section("System Status") {
+                    HStack {
+                        Text("State Root")
+                        Spacer()
+                        Text(stateRoot)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                    }
+                    HStack {
+                        Text("Database")
+                        Spacer()
+                        Text(stats)
+                            .font(.caption)
+                    }
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }

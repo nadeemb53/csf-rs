@@ -233,9 +233,9 @@ impl QueryEngine {
 
         let context = assembler.assemble(scored_chunks);
 
-        // 3. Prepare Prompt
+        // 3. Prepare Prompt (optimized for SmolLM2 / Mistral ChatML)
         let prompt = format!(
-            "Context information is below.\n---------------------\n{}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {}\nAnswer: ",
+            "<|im_start|>system\nYou are a precise assistant. Extract facts from the context to answer the user query accurately.\n- Explicitly list any blockchains, protocols, or projects mentioned.\n- Use bullet points for lists of entities.\n- If the answer is in the context, do not say it is missing.\n- Maintain technical spelling (e.g., zk-SNARKs).\n<|im_end|>\n<|im_start|>user\nContext information:\n{}\n\nQuery: {}<|im_end|>\n<|im_start|>assistant\n",
             context, query
         );
 

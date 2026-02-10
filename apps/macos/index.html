@@ -24,6 +24,30 @@
             font-size: 0.9em;
         }
 
+        .pipeline-status {
+            padding: 8px 12px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            display: inline-block;
+            font-weight: bold;
+            color: #007aff;
+            margin-bottom: 15px;
+        }
+
+        .danger-button {
+            background-color: #ff3b30;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            float: right;
+        }
+
+        .danger-button:hover {
+            background-color: #d70a00;
+        }
+
         input[type="text"] {
             width: 300px;
             padding: 5px;
@@ -77,7 +101,9 @@
     </div>
 
     <div class="card">
+        <button class="danger-button" onclick="resetHub()">Reset Hub</button>
         <h3>2. System Status</h3>
+        <div id="pipelineStatus" class="pipeline-status">Offline</div>
         <div class="stats">
             State Root: <span id="stateRoot">...</span><br>
             Documents: <span id="docCount">0</span><br>
@@ -85,8 +111,7 @@
         </div>
         <br>
         <button type="button" onclick="refreshStats()">Refresh Status</button>
-        <button type="button" onclick="syncNow()">Push Sync</button>
-        <button type="button" onclick="pullSyncAction()">Pull Sync</button>
+        <span style="font-size: 0.8em; color: #666; margin-left: 10px;">Syncing automatically every 5s</span>
     </div>
 
     <div class="card">
@@ -138,22 +163,31 @@
             document.getElementById('stateRoot').innerText = stats.state_root;
             document.getElementById('docCount').innerText = stats.doc_count;
             document.getElementById('chunkCount').innerText = stats.chunk_count;
-        }
 
-        async function syncNow() {
-            const res = await invoke('trigger_sync');
-            alert(res);
-        }
+            const statusEl = document.getElementById('pipelineStatus');
+            statusEl.innerText = stats.status;
 
-        async function pullSyncAction() {
-            try {
-                const res = await invoke('pull_sync');
-                alert(res);
-                refreshStats();
-            } catch (e) {
-                alert("Pull failed: " + e);
+            // Highlight active states
+            if (stats.status === "Idle") {
+                statusEl.style.color = "#4cd964"; // Green
+                statusEl.style.background = "#e5f9e7";
+            } else if (stats.status === "Offline") {
+                statusEl.style.color = "#8e8e93"; // Gray
+                statusEl.style.background = "#f2f2f7";
+            } else {
+                statusEl.style.color = "#007aff"; // Blue
+                statusEl.style.background = "#eefbff";
             }
         }
+
+        async function resetHub() {
+            if (confirm("Are you sure you want to delete the local database and reset? This will re-index your files.")) {
+                const res = await invoke('reset_data');
+                alert(res);
+                location.reload();
+            }
+        }
+
 
         async function runQuery(event) {
             if (event) event.preventDefault();
