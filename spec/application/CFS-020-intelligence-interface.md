@@ -1,7 +1,7 @@
 # CFS-020: Intelligence Interface
 
-> **Spec Version**: 1.0.0-draft
-> **Status**: Draft
+> **Spec Version**: 1.0.0
+> **Author**: Nadeem Bhati
 > **Category**: Application
 > **Requires**: CFS-001, CFS-012
 

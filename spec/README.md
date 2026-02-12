@@ -1,8 +1,7 @@
 # Cognitive Filesystem (CFS) Protocol Specification
 
-> **Version**: 1.0.0-draft
-> **Status**: Draft
-> **Authors**: CFS Protocol Contributors
+> **Version**: 1.0.0
+> **Authors**: Nadeem Bhati
 > **Last Updated**: February 2026
 
 ## Abstract
