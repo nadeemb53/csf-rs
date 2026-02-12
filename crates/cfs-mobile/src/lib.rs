@@ -12,6 +12,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Runtime;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -35,6 +36,7 @@ pub struct CfsContext {
     pub graph: Arc<Mutex<GraphStore>>,
     pub embedder: Arc<EmbeddingEngine>,
     pub generator: Mutex<Option<Arc<QueryEngine>>>,
+    pub state_valid: AtomicBool,
 }
 
 /// Initialize the CFS context
@@ -104,6 +106,7 @@ pub unsafe extern "C" fn cfs_init(db_path: *const c_char) -> *mut CfsContext {
         graph: graph_arc,
         embedder: embedder_arc,
         generator: Mutex::new(None),
+        state_valid: AtomicBool::new(true),
     });
 
     println!("[CFS-Mobile] Context created successfully.");
@@ -180,21 +183,30 @@ pub unsafe extern "C" fn cfs_sync(
             }
         }
 
-        // 3. Determine start point
-        let start_index = if let Some(head) = local_head_hash {
+        // 3. Determine start point and whether we need a fresh sync
+        let (start_index, needs_fresh_sync) = if let Some(head) = local_head_hash {
             // Find our head in remote list
             if let Some(idx) = remote_hashes.iter().position(|h| *h == head) {
-                idx + 1 // Start from next
+                (idx + 1, false) // Continue from next
             } else {
-                // If the relay is empty or our head isn't there, we must start from 0
-                // to ensure we have all data from the relay. 
-                // Since apply_diff is idempotent (INSERT OR REPLACE), this is safe.
-                println!("[CFS-Mobile] Local head not found in relay. Starting from beginning.");
-                0
+                // Local head not in relay - state is divergent, need fresh sync
+                println!("[CFS-Mobile] Local head not found in relay. Starting fresh sync.");
+                (0, true)
             }
         } else {
-            0 // Start from beginning
+            // No local head - starting fresh
+            (0, true)
         };
+
+        // Clear stale data before fresh sync to ensure deterministic state
+        if needs_fresh_sync && !remote_hashes.is_empty() {
+            println!("[CFS-Mobile] Clearing local data for fresh sync...");
+            let mut graph = ctx.graph.lock().unwrap();
+            if let Err(e) = graph.clear_all() {
+                set_last_error(&format!("Failed to clear graph for fresh sync: {}", e));
+                return Err(CfsError::Database(format!("Failed to clear graph: {}", e)));
+            }
+        }
 
         if start_index >= remote_hashes.len() {
             println!("[CFS-Mobile] Already up to date (start_index: {}, len: {})", start_index, remote_hashes.len());
@@ -242,16 +254,65 @@ pub unsafe extern "C" fn cfs_sync(
             };
 
             // Before applying, verify semantic new_root in diff
-            // Actually, we trust the Signed StateRoot for now in V0.
-            
+            // Every replica must independently derive and verify its state.
             {
                 let mut graph = ctx.graph.lock().unwrap();
+                
+                // 1. Apply the diff
                 if let Err(e) = graph.apply_diff(&diff) {
                     set_last_error(&format!("Failed to apply diff: {}", e));
                     return Err(CfsError::Database(format!("Failed to apply diff: {}", e)));
                 }
-                
-                // Also store the StateRoot we just applied
+
+                // 2. MANDATORY: Recompute Merkle root from scratch to verify diff integrity
+                // Debug: Log stats to verify data counts match desktop
+                if let Ok(stats) = graph.stats() {
+                    println!(
+                        "[CFS-Mobile] After diff {}: docs={}, chunks={}, embeddings={}, edges={}",
+                        diff.metadata.seq, stats.documents, stats.chunks, stats.embeddings, stats.edges
+                    );
+                }
+
+                let recomputed_root = match graph.compute_merkle_root() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        ctx.state_valid.store(false, Ordering::SeqCst);
+                        set_last_error(&format!("Critical: Merkle recomputation failed: {}", e));
+                        return Err(CfsError::Verification(format!("Merkle recomputation failed: {}", e)));
+                    }
+                };
+
+                if recomputed_root != diff.metadata.new_root {
+                    // Log detailed diagnostics before failing
+                    println!(
+                        "[CFS-Mobile] VERIFICATION MISMATCH for diff {}:\n  Expected (signed): {}\n  Computed (local):  {}",
+                        diff.metadata.seq,
+                        hex::encode(diff.metadata.new_root),
+                        hex::encode(recomputed_root)
+                    );
+                    println!(
+                        "[CFS-Mobile] Diff contained: +{} docs, +{} chunks, +{} embs, -{} docs, -{} chunks, -{} embs",
+                        diff.added_docs.len(),
+                        diff.added_chunks.len(),
+                        diff.added_embeddings.len(),
+                        diff.removed_doc_ids.len(),
+                        diff.removed_chunk_ids.len(),
+                        diff.removed_embedding_ids.len()
+                    );
+
+                    ctx.state_valid.store(false, Ordering::SeqCst);
+                    let msg = format!(
+                        "STRICT VERIFICATION FAILURE: Local root {} does not match signed root {} after diff {}",
+                        hex::encode(recomputed_root),
+                        hex::encode(diff.metadata.new_root),
+                        diff.metadata.seq
+                    );
+                    set_last_error(&msg);
+                    error!("{}", msg);
+                    return Err(CfsError::Verification(msg));
+                }
+
+                // Root verified, store the StateRoot object
                 let state_root = cfs_core::StateRoot {
                     hash: diff.metadata.new_root,
                     parent: if diff.metadata.prev_root == [0u8; 32] { None } else { Some(diff.metadata.prev_root) },
@@ -264,6 +325,9 @@ pub unsafe extern "C" fn cfs_sync(
                     set_last_error(&format!("Failed to set latest root: {}", e));
                     return Err(CfsError::Database(format!("Failed to set latest root: {}", e)));
                 }
+                
+                // State is confirmed valid
+                ctx.state_valid.store(true, Ordering::SeqCst);
             }
             applied_count += 1;
         }
@@ -325,6 +389,11 @@ pub unsafe extern "C" fn cfs_query(
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
+
+    if !ctx.state_valid.load(Ordering::SeqCst) {
+        set_last_error("Operation denied: Substrate state verification failed (Merkle Mismatch).");
+        return ptr::null_mut();
+    }
 
     let qe = ctx.query_engine.lock().unwrap().clone();
     let res: Result<Vec<SimpleSearchResult>> = (|| {
@@ -490,9 +559,9 @@ pub unsafe extern "C" fn cfs_init_llm(ctx: *mut CfsContext, model_path: *const c
         }
     };
 
-    println!("[CFS-Mobile] Creating QueryEngine with generator...");
+    println!("[CFS-Mobile] Creating QueryEngine with intelligence engine...");
     let qe = cfs_query::QueryEngine::new(ctx.graph.clone(), ctx.embedder.clone())
-        .with_generator(generator);
+        .with_intelligence(generator);
     println!("[CFS-Mobile] QueryEngine created");
 
     match ctx.generator.lock() {
@@ -528,6 +597,14 @@ pub unsafe extern "C" fn cfs_generate(ctx: *mut CfsContext, query: *const c_char
     };
 
     println!("[CFS-Mobile] cfs_generate called for query: {}", query_str);
+    
+    if !ctx.state_valid.load(Ordering::SeqCst) {
+        let msg = "Generation denied: Substrate state is INVALID. Knowledge integrity compromise detected.";
+        println!("[CFS-Mobile] ERROR: {}", msg);
+        set_last_error(msg);
+        return ptr::null_mut();
+    }
+
     info!("[CFS-Mobile] cfs_generate called for query: {}", query_str);
 
     // Get the generator QueryEngine
@@ -664,6 +741,55 @@ pub unsafe extern "C" fn cfs_last_error() -> *mut c_char {
     };
     let c_str = CString::new(msg).unwrap_or_default();
     c_str.into_raw()
+}
+
+/// Force a fresh resync by clearing all local data and resetting state
+///
+/// Use this to recover from verification failures.
+/// Returns 0 on success, negative on error.
+///
+/// # Safety
+/// `ctx` must be a valid pointer from `cfs_init`.
+#[no_mangle]
+pub unsafe extern "C" fn cfs_force_resync(ctx: *mut CfsContext) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+
+    let ctx = &*ctx;
+
+    // Clear all data
+    {
+        let mut graph = ctx.graph.lock().unwrap();
+        if let Err(e) = graph.clear_all() {
+            set_last_error(&format!("Failed to clear graph: {}", e));
+            return -2;
+        }
+    }
+
+    // Reset state_valid flag
+    ctx.state_valid.store(true, Ordering::SeqCst);
+
+    println!("[CFS-Mobile] Force resync: cleared all data and reset state");
+    info!("Force resync completed - ready for fresh sync");
+
+    0
+}
+
+/// Check if the substrate state is valid
+///
+/// Returns 1 if valid, 0 if invalid (verification failed).
+///
+/// # Safety
+/// `ctx` must be a valid pointer from `cfs_init`.
+#[no_mangle]
+pub unsafe extern "C" fn cfs_is_state_valid(ctx: *mut CfsContext) -> i32 {
+    if ctx.is_null() {
+        return 0;
+    }
+
+    let ctx = &*ctx;
+    if ctx.state_valid.load(Ordering::SeqCst) { 1 } else { 0 }
 }
 
 /// Get graph statistics

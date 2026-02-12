@@ -31,11 +31,15 @@ pub struct GenerationResult {
     pub latency_ms: u64,
 }
 
-/// Trait for LLM text generation (async)
+/// Trait for the CFS Intelligence Module (IM)
+/// 
+/// An IntelligenceEngine is a read-only consumer of the semantic substrate.
+/// It synthesizes information from retrieved context into human-readable answers.
 #[async_trait::async_trait]
-pub trait LLMGenerator: Send + Sync {
-    /// Generate text from a prompt
-    async fn generate(&self, prompt: &str) -> Result<String>;
+pub trait IntelligenceEngine: Send + Sync {
+    /// Generate a synthesized answer from the provided context and query.
+    /// This is a read-only operation and cannot mutate the underlying graph.
+    async fn generate(&self, context: &str, query: &str) -> Result<String>;
 }
 
 /// Ollama-based LLM generator (for desktop/server use)
@@ -52,8 +56,14 @@ impl OllamaGenerator {
 }
 
 #[async_trait::async_trait]
-impl LLMGenerator for OllamaGenerator {
-    async fn generate(&self, prompt: &str) -> Result<String> {
+impl IntelligenceEngine for OllamaGenerator {
+    async fn generate(&self, context: &str, query: &str) -> Result<String> {
+        // Engineered for consistency with mobile prompt
+        let prompt = format!(
+            "<|im_start|>system\nYou are a context reading machine. You do not have knowledge of the outside world.\n- Read the Context below carefully.\n- If the answer to the Query is in the Context, output it.\n- If the answer is NOT in the Context, say 'Information is missing from the substrate.' and nothing else.\n- Do not make up facts.\n<|im_end|>\n<|im_start|>user\nContext:\n{}\n\nQuery: {}<|im_end|>\n<|im_start|>assistant\n",
+            context, query
+        );
+
         let client = reqwest::Client::new();
         let payload = serde_json::json!({
             "model": self.model,
@@ -87,7 +97,7 @@ impl LLMGenerator for OllamaGenerator {
 pub struct QueryEngine {
     graph: Arc<Mutex<cfs_graph::GraphStore>>,
     embedder: Arc<cfs_embeddings::EmbeddingEngine>,
-    generator: Option<Box<dyn LLMGenerator>>,
+    intelligence: Option<Box<dyn IntelligenceEngine>>,
 }
 
 impl QueryEngine {
@@ -99,13 +109,13 @@ impl QueryEngine {
         Self {
             graph,
             embedder,
-            generator: None,
+            intelligence: None,
         }
     }
 
-    /// Set the LLM generator for RAG
-    pub fn with_generator(mut self, generator: Box<dyn LLMGenerator>) -> Self {
-        self.generator = Some(generator);
+    /// Set the intelligence engine for RAG
+    pub fn with_intelligence(mut self, intelligence: Box<dyn IntelligenceEngine>) -> Self {
+        self.intelligence = Some(intelligence);
         self
     }
 
@@ -233,42 +243,11 @@ impl QueryEngine {
 
         let context = assembler.assemble(scored_chunks);
 
-        // 3. Prepare Prompt (optimized for SmolLM2 / Mistral ChatML)
-        let prompt = format!(
-            "<|im_start|>system\nYou are a precise assistant. Extract facts from the context to answer the user query accurately.\n- Explicitly list any blockchains, protocols, or projects mentioned.\n- Use bullet points for lists of entities.\n- If the answer is in the context, do not say it is missing.\n- Maintain technical spelling (e.g., zk-SNARKs).\n<|im_end|>\n<|im_start|>user\nContext information:\n{}\n\nQuery: {}<|im_end|>\n<|im_start|>assistant\n",
-            context, query
-        );
-
-        // 4. Generate answer using configured generator or fallback to Ollama
-        let answer = if let Some(ref generator) = self.generator {
-            generator.generate(&prompt).await?
+        // 3. Generate answer using configured intelligence engine (no fallback)
+        let answer = if let Some(ref engine) = self.intelligence {
+            engine.generate(&context, query).await?
         } else {
-            // Fallback to Ollama for backward compatibility
-            let client = reqwest::Client::new();
-            let payload = serde_json::json!({
-                "model": "mistral",
-                "prompt": prompt,
-                "stream": false
-            });
-
-            let res = client
-                .post("http://localhost:11434/api/generate")
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|e: reqwest::Error| {
-                    CfsError::Embedding(format!("Ollama request failed: {}", e))
-                })?;
-
-            let json: serde_json::Value = res
-                .json()
-                .await
-                .map_err(|e: reqwest::Error| CfsError::Parse(e.to_string()))?;
-
-            json["response"]
-                .as_str()
-                .ok_or_else(|| CfsError::Parse("Invalid Ollama response".into()))?
-                .to_string()
+            return Err(CfsError::NotFound("Intelligence engine not configured".into()));
         };
 
         Ok(GenerationResult {

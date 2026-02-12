@@ -31,6 +31,8 @@ pub mod namespaces {
     pub const DOCUMENT: Uuid = Uuid::from_u128(0x550e8400_e29b_41d4_a716_446655440000);
     /// Namespace for Chunk nodes: 550e8400-e29b-41d4-a716-446655440001
     pub const CHUNK: Uuid = Uuid::from_u128(0x550e8400_e29b_41d4_a716_446655440001);
+    /// Namespace for Embedding nodes: 550e8400-e29b-41d4-a716-446655440002
+    pub const EMBEDDING: Uuid = Uuid::from_u128(0x550e8400_e29b_41d4_a716_446655440002);
 }
 
 /// Re-export commonly used types

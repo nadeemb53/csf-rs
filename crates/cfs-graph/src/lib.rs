@@ -940,6 +940,26 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Clear all data from the graph store (for fresh sync)
+    pub fn clear_all(&mut self) -> Result<()> {
+        self.db.execute_batch(
+            r#"
+            DELETE FROM embeddings;
+            DELETE FROM chunks;
+            DELETE FROM documents;
+            DELETE FROM edges;
+            DELETE FROM state_roots;
+            "#,
+        )
+        .map_err(|e| CfsError::Database(e.to_string()))?;
+
+        // Reset HNSW index
+        *self.hnsw.write().unwrap() = HnswIndex::new();
+
+        info!("Cleared all data from graph store for fresh sync");
+        Ok(())
+    }
+
     /// Get statistics about the graph store
     pub fn stats(&self) -> Result<GraphStats> {
         let doc_count: i64 = self

@@ -13,7 +13,7 @@ CFS currently provides a complete end-to-end pipeline for:
 * Hybrid (lexical + vector) retrieval
 * Deterministic context assembly
 * Encrypted, verifiable synchronization
-* 100% Local AI (LLM) Inference on iOS
+* 100% Local Inference on desktop and mobile
 * Desktop and mobile parity
 
 No cloud inference or external AI APIs are required.
@@ -26,7 +26,7 @@ No cloud inference or external AI APIs are required.
   All ingestion, indexing, and retrieval run locally.
 
 * **Deterministic**
-  Identical inputs produce identical state roots, chunk IDs, and retrieval results.
+  Identical inputs produce identical state roots, chunk IDs, and retrieval results. This is enforced via **SoftFloat** arithmetic and **Canonical Inference**.
 
 * **Mutable but stable**
   File changes trigger incremental updates without reindexing unrelated content.
@@ -48,8 +48,9 @@ No cloud inference or external AI APIs are required.
 
 ### Indexing
 
-* Vector index (HNSW) for semantic search
+* **Transient semantic index** (HNSW) for fast retrieval
 * SQLite FTS5 index for lexical search
+* **SoftFloat / i16 embeddings** for deterministic similarity
 * Explicit embedding versioning
 * Incremental re-embedding only for changed chunks
 
@@ -60,6 +61,7 @@ No cloud inference or external AI APIs are required.
   * Semantic (vector) results
   * Lexical (keyword) results
 * Fusion via Reciprocal Rank Fusion (RRF)
+* Integer Dot Product for deterministic scoring
 * Chunk-ID–based deduplication
 * Deterministic ordering
 * No rerankers or LLM involvement
@@ -96,11 +98,10 @@ No cloud inference or external AI APIs are required.
 * Read-only local graph (V0)
 * Encrypted state pull with Merkle-root verification
 * Hybrid query support (Semantic + Lexical)
-* **Local AI Integration**: On-device LLM inference via `llama.cpp`
-* **Trust & Transparency**: 
-    * "End-to-End Private" badge confirms local work
-    * State Verification view explains deterministic state roots
-    * Verified latency metrics for every generation
+* On-device inference via `llama.cpp`
+* "End-to-End Private" badge confirms local work
+* State Verification view explains deterministic state roots
+* Verified latency metrics for substrate-to-intelligence synthesis
 
 Both apps are intentionally minimal and expose internal state rather than hiding it.
 
@@ -138,6 +139,8 @@ Both apps are intentionally minimal and expose internal state rather than hiding
 ## Philosophy
 
 CFS is built bottom-up.
-Intelligence comes **after** correctness.
+**Intelligence comes after correctness.**
+The substrate is the source of truth; intelligence is a read-only viewer.
+See [INTELLIGENCE_CONTRACT.md](file:///Users/nadeem/dev/CFS/INTELLIGENCE_CONTRACT.md) for technical boundaries.
 
 

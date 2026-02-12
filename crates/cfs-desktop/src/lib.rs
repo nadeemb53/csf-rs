@@ -10,6 +10,7 @@ use cfs_parser::{Chunker, ChunkConfig};
 use tracing::info;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 mod watcher;
 mod sync;
@@ -39,14 +40,29 @@ impl IngestionWorker {
 
     fn process_event(&self, event: notify::Event) {
         use notify::EventKind;
-        // Simplified event handling
+
+        // Log all events for debugging
+        tracing::debug!("FS Event: {:?}", event);
+
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
                 for path in event.paths {
                     if path.is_file() {
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        if filename == ".DS_Store" || filename.starts_with('.') {
+                            continue;
+                        }
                         if let Err(e) = self.process_file(&path) {
                             tracing::error!("Failed to process file {:?}: {}", path, e);
                         }
+                    }
+                }
+            }
+            EventKind::Remove(_) => {
+                info!("Remove event detected: {:?}", event.paths);
+                for path in event.paths {
+                    if let Err(e) = self.remove_file(&path) {
+                        tracing::error!("Failed to remove file {:?}: {}", path, e);
                     }
                 }
             }
@@ -130,6 +146,42 @@ impl IngestionWorker {
         );
         Ok(())
     }
+
+    fn remove_file(&self, path: &PathBuf) -> Result<()> {
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+        *self.status.lock().unwrap() = format!("Removing {}", filename);
+
+        info!("Remove event received for: {:?}", path);
+
+        let mut graph = self.graph.lock().unwrap();
+        if let Some(doc) = graph.get_document_by_path(path)? {
+            info!("Removing document from substrate: {:?}", path);
+
+            // 1. Get associated IDs for sync
+            let chunks = graph.get_chunks_for_doc(doc.id)?;
+            let chunk_ids: Vec<Uuid> = chunks.iter().map(|c| c.id).collect();
+            let mut embedding_ids = Vec::new();
+            for cid in &chunk_ids {
+                if let Some(emb) = graph.get_embedding_for_chunk(*cid)? {
+                    embedding_ids.push(emb.id);
+                }
+            }
+
+            // 2. Perform deletion in DB
+            graph.delete_document(doc.id)?;
+
+            // 3. Record for sync
+            self.sync_manager.record_remove_doc(doc.id, chunk_ids, embedding_ids);
+
+            info!("Document removed successfully: {:?}", path);
+        } else {
+            // Document not found - might be a path mismatch
+            tracing::warn!("Remove event for unknown document: {:?}", path);
+        }
+
+        *self.status.lock().unwrap() = "Idle".to_string();
+        Ok(())
+    }
 }
 
 impl DesktopApp {
@@ -188,11 +240,17 @@ impl DesktopApp {
         };
 
         // Initial crawl
+        let mut found_paths = std::collections::HashSet::new();
         for dir in &self.watch_dirs {
             for entry in std::fs::read_dir(dir).map_err(|e| CfsError::Io(e))? {
                 let entry = entry.map_err(|e| CfsError::Io(e))?;
                 let path = entry.path();
                 if path.is_file() {
+                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if filename == ".DS_Store" || filename.starts_with('.') {
+                        continue;
+                    }
+                    found_paths.insert(path.clone());
                     if let Err(e) = worker.process_file(&path) {
                         tracing::error!("Failed to process existing file {:?}: {}", path, e);
                     }
@@ -200,13 +258,56 @@ impl DesktopApp {
             }
         }
 
-        // Start sync loop
+        // Pruning: Remove docs from DB that are no longer in watch dirs
+        {
+            let mut graph = self.graph.lock().unwrap();
+            let all_docs = graph.get_all_documents()?;
+            for doc in all_docs {
+                // Only prune if the doc is in one of the watch dirs but not found in the crawl
+                let in_watch_dir = self.watch_dirs.iter().any(|d| doc.path.starts_with(d));
+                if in_watch_dir && !found_paths.contains(&doc.path) {
+                    info!("Pruning stale document from substrate: {:?}", doc.path);
+                    // Get associated IDs for sync
+                    let chunks = graph.get_chunks_for_doc(doc.id)?;
+                    let chunk_ids: Vec<Uuid> = chunks.iter().map(|c| c.id).collect();
+                    let mut embedding_ids = Vec::new();
+                    for cid in &chunk_ids {
+                        if let Some(emb) = graph.get_embedding_for_chunk(*cid)? {
+                            embedding_ids.push(emb.id);
+                        }
+                    }
+                    graph.delete_document(doc.id)?;
+                    // Record removal diff so the relay (and other devices) know it's gone
+                    self.sync_manager.record_remove_doc(doc.id, chunk_ids, embedding_ids);
+                }
+            }
+        }
+
+        // Start sync loop with periodic prune
         let sync_mgr = self.sync_manager.clone();
+        let app_clone = self.clone();
         tokio::spawn(async move {
             info!("Starting background sync loop (every 5s)");
+            let mut prune_counter = 0u32;
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                
+
+                // Prune stale files every 30 seconds (6 cycles)
+                // FSEvents on macOS often misses Remove events
+                prune_counter += 1;
+                if prune_counter >= 6 {
+                    prune_counter = 0;
+                    match app_clone.prune_stale_documents() {
+                        Ok(count) if count > 0 => {
+                            info!("Auto-pruned {} stale documents", count);
+                        }
+                        Err(e) => {
+                            tracing::error!("Auto-prune failed: {}", e);
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Pull first
                 if let Err(e) = sync_mgr.pull().await {
                     tracing::error!("Sync pull failed: {}", e);
@@ -233,6 +334,39 @@ impl DesktopApp {
 
     pub fn status(&self) -> String {
         self.status.lock().unwrap().clone()
+    }
+
+    /// Prune stale documents (files that no longer exist) and record for sync
+    pub fn prune_stale_documents(&self) -> Result<usize> {
+        let mut graph = self.graph.lock().unwrap();
+        let all_docs = graph.get_all_documents()?;
+
+        let mut removed = 0;
+        for doc in all_docs {
+            if !doc.path.exists() {
+                info!("Pruning stale document: {:?}", doc.path);
+
+                // Get associated IDs for sync
+                let chunks = graph.get_chunks_for_doc(doc.id)?;
+                let chunk_ids: Vec<Uuid> = chunks.iter().map(|c| c.id).collect();
+                let mut embedding_ids = Vec::new();
+                for cid in &chunk_ids {
+                    if let Some(emb) = graph.get_embedding_for_chunk(*cid)? {
+                        embedding_ids.push(emb.id);
+                    }
+                }
+
+                // Delete from DB
+                graph.delete_document(doc.id)?;
+
+                // Record for sync
+                self.sync_manager.record_remove_doc(doc.id, chunk_ids, embedding_ids);
+
+                removed += 1;
+            }
+        }
+
+        Ok(removed)
     }
 }
 

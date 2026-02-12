@@ -109,12 +109,12 @@ async fn generate_answer(state: State<'_, AppState>, text: String) -> Result<cfs
         if let Some(app) = app_lock.as_ref() {
             let graph = app.graph();
             let embedder = Arc::new(EmbeddingEngine::new()?);
-            // Use Ollama as the generator for desktop
-            let generator = Box::new(cfs_query::OllamaGenerator::new(
+            // Use Ollama as the intelligence engine for desktop
+            let intelligence = Box::new(cfs_query::OllamaGenerator::new(
                 "http://localhost:11434".into(),
                 "mistral".into(),
             ));
-            QueryEngine::new(graph, embedder).with_generator(generator)
+            QueryEngine::new(graph, embedder).with_intelligence(intelligence)
         } else {
             return Err(cfs_core::CfsError::NotFound("App not initialized".into()));
         }
@@ -133,13 +133,31 @@ async fn trigger_sync(_state: State<'_, AppState>) -> Result<String> {
 async fn reset_data(state: State<'_, AppState>) -> Result<String> {
     let mut app_lock = state.app.lock().unwrap();
     *app_lock = None;
-    
+
     // Delete data dir
     if state.data_dir.exists() {
         std::fs::remove_dir_all(&state.data_dir).map_err(|e| cfs_core::CfsError::Io(e))?;
     }
-    
+
     Ok("Data directory deleted. App reset.".into())
+}
+
+#[tauri::command]
+async fn rescan_and_prune(state: State<'_, AppState>) -> Result<String> {
+    let app_lock = state.app.lock().unwrap();
+    if let Some(app) = app_lock.as_ref() {
+        // Use the DesktopApp method which also records deletions for sync
+        let removed = app.prune_stale_documents()?;
+
+        // Get new state root
+        let graph = app.graph();
+        let lock = graph.lock().unwrap();
+        let new_root = lock.compute_merkle_root()?;
+
+        Ok(format!("Pruned {} stale documents. New root: {}", removed, hex::encode(new_root)))
+    } else {
+        Ok("App not initialized".into())
+    }
 }
 
 #[tauri::command]
@@ -195,6 +213,7 @@ fn main() {
             generate_answer,
             trigger_sync,
             reset_data,
+            rescan_and_prune,
             list_documents,
             get_document_chunks
         ])

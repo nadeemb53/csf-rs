@@ -53,63 +53,66 @@ impl SyncManager {
         })
     }
 
-    /// Record a document addition
+    /// Record a document addition (deduplicates by ID)
     pub fn record_add_doc(&self, doc: cfs_core::Document) {
         let mut diff = self.pending_diff.lock().unwrap();
+        // Deduplicate: remove any existing entry with same ID, then add new one
+        diff.added_docs.retain(|d| d.id != doc.id);
         diff.added_docs.push(doc);
     }
-    
-    /// Record a chunk addition
+
+    /// Record a chunk addition (deduplicates by ID)
     pub fn record_add_chunk(&self, chunk: cfs_core::Chunk) {
         let mut diff = self.pending_diff.lock().unwrap();
+        diff.added_chunks.retain(|c| c.id != chunk.id);
         diff.added_chunks.push(chunk);
     }
 
-    /// Record an embedding addition
+    /// Record an embedding addition (deduplicates by ID)
     pub fn record_add_embedding(&self, emb: cfs_core::Embedding) {
         let mut diff = self.pending_diff.lock().unwrap();
+        diff.added_embeddings.retain(|e| e.id != emb.id);
         diff.added_embeddings.push(emb);
+    }
+
+    /// Record a document removal
+    pub fn record_remove_doc(&self, doc_id: Uuid, chunk_ids: Vec<Uuid>, embedding_ids: Vec<Uuid>) {
+        let mut diff = self.pending_diff.lock().unwrap();
+        diff.removed_doc_ids.push(doc_id);
+        diff.removed_chunk_ids.extend(chunk_ids);
+        diff.removed_embedding_ids.extend(embedding_ids);
     }
 
     /// Push pending changes to the relay
     pub async fn push(&self) -> Result<()> {
-        // 1. Compute new semantic root and check if sync is needed
-        let new_semantic_root = {
+        // CRITICAL: Take both locks together to prevent race condition
+        // The merkle root must be computed with the same state as the diff
+        let (mut diff, new_semantic_root, prev_root, prev_seq) = {
             let graph = self.graph.lock().unwrap();
-            graph.compute_merkle_root()?
-        };
-
-        let mut diff = {
             let mut pending = self.pending_diff.lock().unwrap();
-            
-            // Check current root in DB
-            let current_root_hash = {
-                let graph = self.graph.lock().unwrap();
-                graph.get_latest_root()?.map(|r| r.hash).unwrap_or([0u8; 32])
-            };
 
-            if pending.is_empty() && new_semantic_root == current_root_hash {
+            // Get current state
+            let current_root_hash = graph.get_latest_root()?.map(|r| r.hash).unwrap_or([0u8; 32]);
+            let current_seq = graph.get_latest_root()?.map(|r| r.seq).unwrap_or(0);
+
+            // Compute merkle root while holding both locks
+            let new_root = graph.compute_merkle_root()?;
+
+            if pending.is_empty() && new_root == current_root_hash {
                 info!("State is identical and no pending changes. Skipping sync.");
                 return Ok(());
             }
 
-            // Swap with new empty diff
-            let old = pending.clone(); 
+            // Swap with new empty diff while still holding locks
+            let old = pending.clone();
             *pending = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), old.metadata.seq + 1);
-            old
+
+            (old, new_root, current_root_hash, current_seq)
         };
 
         info!("Syncing {} semantic changes...", diff.change_count());
 
-        // 2. Get current state root from DB (this is "prev_root" for the diff)
-        let (prev_root, prev_seq) = {
-            let graph = self.graph.lock().unwrap();
-            match graph.get_latest_root()? {
-                Some(r) => (r.hash, r.seq),
-                None => ([0u8; 32], 0),
-            }
-        };
-
+        // 2. Set diff metadata (prev_root and prev_seq already extracted above)
         diff.metadata.prev_root = prev_root;
         diff.metadata.seq = prev_seq + 1;
         diff.metadata.timestamp = std::time::SystemTime::now()
