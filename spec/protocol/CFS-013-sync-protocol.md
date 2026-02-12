@@ -361,37 +361,50 @@ function pair_devices(device_a: DeviceIdentity, device_b: DeviceIdentity) -> Sha
 
 ### 13. Conflict Resolution
 
-CFS V1 uses a simple conflict resolution strategy:
+CFS V1 supports **Multi-Writer** operations, allowing any authorized device to ingest or modify content. Conflicts are resolved deterministically using **Hybrid Logical Clocks (HLC)** and **Last-Writer-Wins (LWW)** semantics.
 
-#### Write-Once Semantics (V1 Constraint)
+#### 13.1 Multi-Writer Semantics
 
-**Constraint**: V1 strictly enforces a **Single-Writer / Multi-Reader** topology.
+- **Writers**: ALL paired devices are authorized to create/edit content.
+- **Readers**: ALL paired devices can read content.
+- **Propagation**: Diffs are pushed to the relay server and pulled by all other devices.
 
-- **Writer**: Only ONE device (e.g., Desktop) is authorized to create/edit content.
-- **Readers**: All other devices (e.g., Mobile) are Read-Only replicas.
-- **Enforcement**:
-    - Readers MUST reject local writes (UI should be read-only).
-    - Relay server MAY reject pushes from non-writer devices (if configured).
+#### 13.2 Resolution Strategy
+
+When two devices modify the same entity (e.g., update the same Document path) concurrently:
+
+1.  **LWW w/ HLC**: The operation with the later HLC timestamp wins.
+2.  **Tie-Breaking**: If timestamps are identical (rare), the operation with the lexicographically larger hash wins.
+
+```
+function resolve_conflict(local_op: Operation, remote_op: Operation) -> Operation:
+    // Compare timestamps using HLC ordering
+    if remote_op.timestamp > local_op.timestamp:
+        return remote_op
+    else if local_op.timestamp > remote_op.timestamp:
+        return local_op
+    else:
+        // Tie-breaker: Deterministic hash comparison
+        if hash(remote_op) > hash(local_op):
+            return remote_op
+        else:
+            return local_op
+```
 
 **Rationale**:
-- Simplifies V1 by eliminating conflict resolution logic.
-- Avoids complexity of CRDTs or Vector Clocks in the initial release.
-- Matches the primary use case: "Curate on Desktop, Consume on Mobile".
+- **User Expectations**: Users expect to be able to save links or notes from mobile.
+- **Simplicity**: LWW provides "good enough" eventual consistency for personal knowledge bases without the complexity of text-based CRDTs (though CRDTs may be added for specific fields in V2).
 
-#### Future: Multi-Writer Conflict Resolution
+#### Future: Granular Conflict Resolution
+
+V2 may introduce:
 
 ```
 enum ConflictResolution {
-    // Last-write-wins based on timestamp
-    LastWriteWins,
-
-    // Keep both versions, create conflict marker
+    // Keep both versions, create conflict marker for user resolution
     KeepBoth,
 
-    // Use vector clocks for causality tracking
-    VectorClocks,
-
-    // CRDT-based automatic merge
+    // Use CRDTs for collaborative text editing
     CRDT,
 }
 ```

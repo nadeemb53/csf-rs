@@ -30,7 +30,6 @@ type ID = [u8; 16];  // 128-bit identifier
 ```
 
 **Generation Algorithm**:
-**Generation Algorithm**:
 
 IDs are the first 16 bytes of the BLAKE3 hash of the input.
 
@@ -87,7 +86,7 @@ hierarchical_hash = BLAKE3(
 
 This enables verification that chunk content has not been modified.
 
-This enables verification that chunk content has not been modified.
+
 
 #### Overlap Semantics
 
@@ -256,10 +255,7 @@ CognitiveDiff {
     removed_chunks:      Vec<ID>
     removed_embeddings:  Vec<ID>
     removed_edges:       Vec<(ID, ID, EdgeKind)>
-    removed_documents:   Vec<ID>
-    removed_chunks:      Vec<ID>
-    removed_embeddings:  Vec<ID>
-    removed_edges:       Vec<(ID, ID, EdgeKind)>
+
 
     // Metadata
     prev_root:       [u8; 32]    // State root before diff
