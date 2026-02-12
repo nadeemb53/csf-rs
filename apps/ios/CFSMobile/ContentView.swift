@@ -29,7 +29,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 // 1. Search Bar at Top
                 VStack(spacing: 8) {
-                    TextField("Search your files or ask AI...", text: $queryText)
+                    TextField("Search files or consult substrate...", text: $queryText)
                         .textFieldStyle(.roundedBorder)
                         .padding(.horizontal)
                         .autocorrectionDisabled()
@@ -50,7 +50,7 @@ struct ContentView: View {
                                     ProgressView().tint(.white)
                                 } else {
                                     Image(systemName: "sparkles")
-                                    Text("Ask AI")
+                                    Text("Consult Substrate")
                                 }
                             }
                             .frame(maxWidth: .infinity)
@@ -89,7 +89,7 @@ struct ContentView: View {
                         if !aiAnswer.isEmpty || (isSearching && aiAnswer.isEmpty) {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack {
-                                    Label("AI Answer", systemImage: "sparkles")
+                                    Label("Synthesized Insight", systemImage: "sparkles")
                                         .font(.headline)
                                         .foregroundColor(.indigo)
                                     Spacer()
@@ -103,7 +103,7 @@ struct ContentView: View {
                                 if isSearching && aiAnswer.isEmpty {
                                     HStack {
                                         ProgressView()
-                                        Text("Reading your files...")
+                                        Text("Extracting verified chunks...")
                                             .font(.subheadline)
                                             .foregroundColor(.secondary)
                                     }
@@ -304,7 +304,7 @@ struct ContentView: View {
                 self.isLlmInitialized = true
                 self.aiAnswer = answer
                 self.aiMetrics = "\(result.latency)ms"
-                self.syncStatus = "AI generated answer"
+                self.syncStatus = "Substrate synthesis complete"
             } else {
                 self.syncStatus = "AI Error: \(result.error ?? "Unknown")"
             }
@@ -355,9 +355,9 @@ struct VerificationView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 16) {
-                    Label("100% Local AI", systemImage: "cpu")
+                    Label("Detachable Intelligence", systemImage: "cpu")
                         .font(.headline)
-                    Text("Artificial Intelligence runs entirely on this device. Your queries and file contents are never sent to a server for processing. This ensures zero data leakage even while using advanced LLM features.")
+                    Text("Intelligence runs entirely on this device. It is a read-only lens over your verified substrate. Your queries and file contents never leave your hardware.")
                         .font(.subheadline)
                 }
 

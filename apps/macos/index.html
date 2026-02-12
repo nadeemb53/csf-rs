@@ -111,6 +111,7 @@
         </div>
         <br>
         <button type="button" onclick="refreshStats()">Refresh Status</button>
+        <button type="button" onclick="pruneStale()" style="margin-left: 10px;">Prune Stale Files</button>
         <span style="font-size: 0.8em; color: #666; margin-left: 10px;">Syncing automatically every 5s</span>
     </div>
 
@@ -118,17 +119,17 @@
         <h3>3. Hybrid Search</h3>
         <input type="text" id="queryInput" placeholder="Enter semantic or keyword query..."
             onkeydown="if(event.key==='Enter') runQuery(event)">
-        <button type="button" onclick="runQuery(event)">Search</button>
-        <button type="button" onclick="generateAI(event)">Research with AI</button>
+        <button type="button" onclick="runQuery(event)">Search Substrate</button>
+        <button type="button" onclick="generateAI(event)">Synthesize with Intelligence</button>
         <div id="results"></div>
 
         <div id="aiSection" style="display: none; margin-top: 20px;">
-            <h4>AI Response <span id="aiStats" class="score"></span></h4>
+            <h4>Synthesis Results <span id="aiStats" class="score"></span></h4>
             <div id="aiResponse" class="ai-response"></div>
 
             <details style="margin-top: 10px;">
-                <summary style="cursor: pointer; font-size: 0.9em; color: #666;">View Assembled Context (Read-only
-                    substrate)</summary>
+                <summary style="cursor: pointer; font-size: 0.9em; color: #666;">View Deterministic Context (Substrate
+                    Chunks)</summary>
                 <div id="aiContext" class="context-box"></div>
             </details>
         </div>
@@ -186,6 +187,12 @@
                 alert(res);
                 location.reload();
             }
+        }
+
+        async function pruneStale() {
+            const res = await invoke('rescan_and_prune');
+            alert(res);
+            refreshStats();
         }
 
 
@@ -250,8 +257,8 @@
             const resultsContainer = document.getElementById('results');
 
             aiSection.style.display = 'block';
-            aiResponse.innerHTML = '<em>Consulting local LLM...</em>';
-            aiContext.innerText = 'Assembling context from verified filesystem...';
+            aiResponse.innerHTML = '<em>Consulting detachable intelligence...</em>';
+            aiContext.innerText = 'Extracting verified chunks from substrate...';
             aiStats.innerText = '';
             resultsContainer.innerHTML = ''; // Clear search results to focus on AI
             if (btn) btn.disabled = true;

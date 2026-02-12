@@ -69,6 +69,19 @@ class CfsBridge {
         let data = json.data(using: .utf8)!
         return try? JSONDecoder().decode(GenerationResult.self, from: data)
     }
+
+    /// Check if the substrate state is valid
+    func isStateValid() -> Bool {
+        guard let context = context else { return false }
+        return cfs_is_state_valid(context) == 1
+    }
+
+    /// Force a fresh resync by clearing all local data
+    /// Use this to recover from verification failures
+    func forceResync() -> Int32 {
+        guard let context = context else { return -1 }
+        return cfs_force_resync(context)
+    }
 }
 
 struct SearchResult: Codable, Identifiable {
@@ -118,3 +131,9 @@ func cfs_free_string(_ s: UnsafeMutablePointer<Int8>)
 
 @_silgen_name("cfs_free")
 func cfs_free(_ ctx: OpaquePointer)
+
+@_silgen_name("cfs_is_state_valid")
+func cfs_is_state_valid(_ ctx: OpaquePointer) -> Int32
+
+@_silgen_name("cfs_force_resync")
+func cfs_force_resync(_ ctx: OpaquePointer) -> Int32

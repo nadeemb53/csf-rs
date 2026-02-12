@@ -33,6 +33,7 @@ impl Embedding {
     /// Create a new embedding from an f32 vector
     ///
     /// Automatically converts to f16 and computes the L2 norm.
+    /// The embedding ID is deterministic based on chunk_id + model_hash.
     pub fn new(chunk_id: Uuid, vector_f32: &[f32], model_hash: [u8; 32]) -> Self {
         let norm = compute_l2_norm(vector_f32);
         let dim = vector_f32.len() as u16;
@@ -40,8 +41,13 @@ impl Embedding {
         // Convert to f16 for storage
         let vector: Vec<f16> = vector_f32.iter().map(|&v| f16::from_f32(v)).collect();
 
+        // Deterministic ID based on chunk_id + model_hash
+        let mut id_input = chunk_id.as_bytes().to_vec();
+        id_input.extend_from_slice(&model_hash);
+        let id = Uuid::new_v5(&crate::namespaces::EMBEDDING, &id_input);
+
         Self {
-            id: Uuid::new_v4(),
+            id,
             chunk_id,
             vector,
             model_hash,

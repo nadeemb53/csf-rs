@@ -11,7 +11,6 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::data_array::LlamaTokenDataArray;
-use llama_cpp_2::token::LlamaToken;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -236,11 +235,17 @@ impl LocalGenerator {
     }
 }
 
-/// Implement cfs_query::LLMGenerator for LocalGenerator
+/// Implement cfs_query::IntelligenceEngine for LocalGenerator
 #[async_trait::async_trait]
-impl cfs_query::LLMGenerator for LocalGenerator {
-    async fn generate(&self, prompt: &str) -> Result<String> {
-        // Clone prompt to owned String for 'static lifetime requirement
+impl cfs_query::IntelligenceEngine for LocalGenerator {
+    async fn generate(&self, context: &str, query: &str) -> Result<String> {
+        // Construct the prompt in the generator to keep the query layer substrate-focused
+        // Engineered for small models (SmolLM2-135M / Qwen2.5-0.5B) to prevent hallucinations
+        let prompt = format!(
+            "<|im_start|>system\nYou are a context reading machine. You do not have knowledge of the outside world.\n- Read the Context below carefully.\n- If the answer to the Query is in the Context, output it.\n- If the answer is NOT in the Context, say 'Information is missing from the substrate.' and nothing else.\n- Do not make up facts.\n<|im_end|>\n<|im_start|>user\nContext:\n{}\n\nQuery: {}<|im_end|>\n<|im_start|>assistant\n",
+            context, query
+        );
+
         let prompt_owned = prompt.to_string();
 
         // Run sync generation in blocking task to not block async runtime
