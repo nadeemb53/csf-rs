@@ -36,50 +36,24 @@ No cloud inference or external AI APIs are required.
 
 ---
 
-## What CFS Does Today
+## Architecture & Specifications
 
-### Document Ingestion
+CFS is defined by a rigorous set of specifications that ensure interoperability and determinism.
 
-* Watches local directories for changes
-* Supports Markdown, text, and PDF
-* Canonicalizes content to eliminate nondeterminism
-* Splits documents into stable, section-aware chunks
-* Computes hierarchical Merkle hashes (chunk → section → document)
+### Core Layer
+*   **[CFS-001: Data Model](./spec/core/CFS-001-data-model.md)** — Canonical data types (Document, Chunk, Embedding), UUIDv5 identity generation, and Merkle tree construction.
+*   **[CFS-002: Storage Engine](./spec/core/CFS-002-storage-engine.md)** — Hybrid persistence using SQLite for metadata and HNSW for transient vector indices.
+*   **[CFS-003: Determinism](./spec/core/CFS-003-determinism.md)** — Mathematical rules for SoftFloat arithmetic and Canonical Inference to guarantee bit-exact synchronization.
 
-### Indexing
+### Protocol Layer
+*   **[CFS-010: Embedding](./spec/protocol/CFS-010-embedding-protocol.md)** — Deterministic vector generation using quantization and provenance tracking.
+*   **[CFS-011: Indexing](./spec/protocol/CFS-011-indexing-protocol.md)** — Document ingestion, chunking strategies, and index maintenance.
+*   **[CFS-012: Retrieval](./spec/protocol/CFS-012-retrieval-protocol.md)** — Hybrid search (Semantic + Lexical), RRF fusion, and Integer Dot Product scoring.
+*   **[CFS-013: Synchronization](./spec/protocol/CFS-013-sync-protocol.md)** — Encrypted, blind synchronization using Merkle diffs and signatures.
 
-* **Transient semantic index** (HNSW) for fast retrieval
-* SQLite FTS5 index for lexical search
-* **SoftFloat / i16 embeddings** for deterministic similarity
-* Explicit embedding versioning
-* Incremental re-embedding only for changed chunks
-
-### Retrieval
-
-* **Hybrid search** combining:
-
-  * Semantic (vector) results
-  * Lexical (keyword) results
-* Fusion via Reciprocal Rank Fusion (RRF)
-* Integer Dot Product for deterministic scoring
-* Chunk-ID–based deduplication
-* Deterministic ordering
-* No rerankers or LLM involvement
-
-### Context Assembly
-
-* Deterministic packing of chunks
-* Token-budget enforcement
-* Stable ordering by score, document, and offset
-* Byte-identical output for identical queries
-
-### Sync
-
-* Encrypted, authenticated diff-based sync
-* Merkle-root state verification
-* Idempotent diff application
-* Desktop as writer, mobile as reader (V0)
-* No server-side knowledge of content
+### Application Layer
+*   **[CFS-020: Intelligence Interface](./spec/application/CFS-020-intelligence-interface.md)** — strict read-only contract for LLM integration.
+*   **[CFS-021: Context Assembly](./spec/application/CFS-021-context-assembly.md)** — Deterministic context window construction for RAG.
 
 ---
 
@@ -134,13 +108,5 @@ Both apps are intentionally minimal and expose internal state rather than hiding
 * `scripts/` — Build and deployment scripts (e.g., iOS cross-compilation)
 * `test_corpus/` — Curated dataset for system validation and RAG testing
 
----
-
-## Philosophy
-
-CFS is built bottom-up.
-**Intelligence comes after correctness.**
-The substrate is the source of truth; intelligence is a read-only viewer.
-See [INTELLIGENCE_CONTRACT.md](file:///Users/nadeem/dev/CFS/INTELLIGENCE_CONTRACT.md) for technical boundaries.
 
 
