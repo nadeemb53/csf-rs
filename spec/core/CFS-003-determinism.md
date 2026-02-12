@@ -1,7 +1,7 @@
 # CFS-003: Determinism & Math
 
-> **Spec Version**: 1.0.0-draft
-> **Status**: Draft
+> **Spec Version**: 1.0.0
+> **Author**: Nadeem Bhati
 > **Category**: Core
 > **Requires**: CFS-001, CFS-002
 

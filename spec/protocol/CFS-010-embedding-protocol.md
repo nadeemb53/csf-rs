@@ -1,7 +1,7 @@
 # CFS-010: Embedding Protocol
 
-> **Spec Version**: 1.0.0-draft
-> **Status**: Draft
+> **Spec Version**: 1.0.0
+> **Author**: Nadeem Bhati
 > **Category**: Protocol
 > **Requires**: CFS-001, CFS-003
 

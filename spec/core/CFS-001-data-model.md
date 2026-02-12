@@ -1,7 +1,7 @@
 # CFS-001: Data Model & Identity
 
-> **Spec Version**: 1.1.0-draft
-> **Status**: Draft
+> **Spec Version**: 1.0.0
+> **Author**: Nadeem Bhati
 > **Category**: Core
 > **Requires**: None
 
