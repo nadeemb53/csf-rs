@@ -156,7 +156,7 @@ pub unsafe extern "C" fn cfs_sync(
     // Create crypto engine for decryption
     let crypto = cfs_sync::CryptoEngine::new_with_seed(key_bytes);
 
-    let client = RelayClient::new(url_str, "dummy_token");
+    let client = RelayClient::new_legacy(url_str, "dummy_token");
 
     // Execute sync in runtime
     let res: Result<i32> = ctx.rt.block_on(async {
@@ -316,7 +316,7 @@ pub unsafe extern "C" fn cfs_sync(
                 let state_root = cfs_core::StateRoot {
                     hash: diff.metadata.new_root,
                     parent: if diff.metadata.prev_root == [0u8; 32] { None } else { Some(diff.metadata.prev_root) },
-                    timestamp: diff.metadata.timestamp,
+                    hlc: diff.metadata.hlc.clone(),
                     device_id: diff.metadata.device_id,
                     signature: payload.signature,
                     seq: diff.metadata.seq,
@@ -403,9 +403,9 @@ pub unsafe extern "C" fn cfs_query(
         let simple_results: Vec<SimpleSearchResult> = results.into_iter().map(|r| SimpleSearchResult {
             text: r.chunk.text,
             score: r.score,
-            doc_path: r.doc_path.to_string_lossy().into_owned(),
+            doc_path: r.doc_path,
         }).collect();
-        
+
         Ok(simple_results)
     })();
 
@@ -453,12 +453,12 @@ pub unsafe extern "C" fn cfs_get_chunks(
     let qe = ctx.query_engine.lock().unwrap().clone();
     let res: Result<Vec<SimpleSearchResult>> = (|| {
         let results = qe.get_chunks_for_document(doc_id)?;
-        
+
         // Convert to simplified struct for JSON
         let simple_results: Vec<SimpleSearchResult> = results.into_iter().map(|r| SimpleSearchResult {
             text: r.chunk.text,
             score: r.score,
-            doc_path: r.doc_path.to_string_lossy().into_owned(),
+            doc_path: r.doc_path,
         }).collect();
         
         Ok(simple_results)

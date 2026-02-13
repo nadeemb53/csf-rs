@@ -1,0 +1,24 @@
+[package]
+name = "cfs-canonical-embeddings"
+version = "0.1.0"
+edition = "2021"
+description = "WASM-based deterministic embedding generation for CFS"
+authors = ["Nadeem Bhati"]
+license = "Apache-2.0"
+
+[dependencies]
+# BLAKE3 for hashing
+blake3 = "1.5"
+
+# Error handling
+thiserror = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# WASM-specific
+wasm-bindgen = "0.2"
+
+[lib]
+crate-type = ["cdylib", "rlib"]

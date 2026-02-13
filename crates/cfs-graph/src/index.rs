@@ -132,7 +132,7 @@ impl PersistentHnswIndex {
 
     /// Load index from disk
     fn load(&mut self) -> Result<()> {
-        if let Some(path) = &self.index_path {
+        if let Some(path) = self.index_path.clone() {
             self.index
                 .load(path.to_str().unwrap())
                 .map_err(|e| CfsError::Database(format!("Failed to load index: {}", e)))?;
@@ -295,9 +295,24 @@ impl PersistentHnswIndex {
 
     /// Clear the index
     pub fn clear(&mut self) -> Result<()> {
+        // Recreate the index since usearch Index doesn't have a clear() method
+        let options = IndexOptions {
+            dimensions: self.config.dimensions,
+            metric: MetricKind::Cos,
+            quantization: ScalarKind::F32,
+            connectivity: self.config.connectivity,
+            expansion_add: self.config.ef_construction,
+            expansion_search: self.config.ef_search,
+            multi: false,
+        };
+
+        self.index = Index::new(&options)
+            .map_err(|e| CfsError::Database(format!("Failed to recreate index: {}", e)))?;
+
         self.index
-            .clear()
-            .map_err(|e| CfsError::Database(format!("Failed to clear index: {}", e)))?;
+            .reserve(self.config.capacity)
+            .map_err(|e| CfsError::Database(format!("Failed to reserve capacity: {}", e)))?;
+
         self.uuid_to_key.clear();
         self.key_to_uuid.clear();
         self.next_key = 0;
