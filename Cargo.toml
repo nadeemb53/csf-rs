@@ -12,6 +12,7 @@ members = [
     "crates/cfs-mobile",
     "crates/cfs-tests",
     "crates/cfs-desktop-cli",
+    "crates/cfs-canonical-embeddings",
     "crates/cfs-inference-mobile",
     "apps/macos/src-tauri",
     "relay/cfs-relay-server",

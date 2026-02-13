@@ -238,12 +238,15 @@ impl LocalGenerator {
 /// Implement cfs_query::IntelligenceEngine for LocalGenerator
 #[async_trait::async_trait]
 impl cfs_query::IntelligenceEngine for LocalGenerator {
-    async fn generate(&self, context: &str, query: &str) -> Result<String> {
+    async fn generate(&self, context: &cfs_core::AssembledContext, query: &str) -> Result<String> {
+        // Format the context using ContextAssembler
+        let formatted_context = cfs_core::ContextAssembler::format(context);
+
         // Construct the prompt in the generator to keep the query layer substrate-focused
         // Engineered for small models (SmolLM2-135M / Qwen2.5-0.5B) to prevent hallucinations
         let prompt = format!(
             "<|im_start|>system\nYou are a context reading machine. You do not have knowledge of the outside world.\n- Read the Context below carefully.\n- If the answer to the Query is in the Context, output it.\n- If the answer is NOT in the Context, say 'Information is missing from the substrate.' and nothing else.\n- Do not make up facts.\n<|im_end|>\n<|im_start|>user\nContext:\n{}\n\nQuery: {}<|im_end|>\n<|im_start|>assistant\n",
-            context, query
+            formatted_context, query
         );
 
         let prompt_owned = prompt.to_string();

@@ -314,7 +314,7 @@ mod tests {
     use super::*;
 
     fn make_chunk(doc_id: Uuid, text: &str, seq: u32) -> Chunk {
-        Chunk::new(doc_id, text.to_string(), seq * 100, seq)
+        Chunk::new(doc_id, text.to_string(), (seq as u64) * 100, seq)
     }
 
     fn make_scored(chunk: Chunk, score: f32, path: &str) -> ScoredChunk {

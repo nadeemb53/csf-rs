@@ -1,11 +1,10 @@
-
-use cfs_core::{CognitiveDiff, CfsError, Result, StateRoot};
+use cfs_core::{CognitiveDiff, CfsError, Hlc, Result, StateRoot};
 use cfs_graph::GraphStore;
 use cfs_relay_client::RelayClient;
-use cfs_sync::{CryptoEngine};
+use cfs_sync::CryptoEngine;
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 use tracing::info;
+use uuid::Uuid;
 
 /// Manages synchronization with the relay server
 pub struct SyncManager {
@@ -43,10 +42,19 @@ impl SyncManager {
         // In reality, we should load pending diffs from disk or DB to persist across restarts.
         // For MVP, if we crash, we lose un-pushed changes (or regenerate them from DB scan? No).
         // Best effort: we assume DesktopApp runs long enough to push.
-        let pending = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), 0);
+        let device_id = Uuid::new_v4();
+        let node_id = *device_id.as_bytes();
+        let hlc = Hlc::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            node_id,
+        );
+        let pending = CognitiveDiff::empty([0u8; 32], device_id, 0, hlc);
 
         Ok(Self {
-            relay_client: RelayClient::new(relay_url, relay_token),
+            relay_client: RelayClient::new_legacy(relay_url, relay_token),
             graph,
             crypto,
             pending_diff: Mutex::new(pending),
@@ -105,7 +113,16 @@ impl SyncManager {
 
             // Swap with new empty diff while still holding locks
             let old = pending.clone();
-            *pending = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), old.metadata.seq + 1);
+            let device_id = old.metadata.device_id;
+            let node_id = *device_id.as_bytes();
+            let hlc = Hlc::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                node_id,
+            );
+            *pending = CognitiveDiff::empty([0u8; 32], device_id, old.metadata.seq + 1, hlc);
 
             (old, new_root, current_root_hash, current_seq)
         };
@@ -115,11 +132,17 @@ impl SyncManager {
         // 2. Set diff metadata (prev_root and prev_seq already extracted above)
         diff.metadata.prev_root = prev_root;
         diff.metadata.seq = prev_seq + 1;
-        diff.metadata.timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        diff.metadata.device_id = Uuid::new_v4(); 
+        let device_id = Uuid::new_v4();
+        let node_id = *device_id.as_bytes();
+        let hlc = Hlc::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            node_id,
+        );
+        diff.metadata.hlc = hlc.clone();
+        diff.metadata.device_id = device_id;
         diff.metadata.new_root = new_semantic_root;
 
         // 3. Create StateRoot object and Sign it
@@ -128,7 +151,7 @@ impl SyncManager {
         let state_root = StateRoot {
             hash: new_semantic_root,
             parent: if prev_root == [0u8; 32] { None } else { Some(prev_root) },
-            timestamp: diff.metadata.timestamp,
+            hlc,
             device_id: diff.metadata.device_id,
             signature,
             seq: diff.metadata.seq,

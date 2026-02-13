@@ -66,7 +66,7 @@ impl Chunker {
                 chunks.push(Chunk::new(
                     doc_id,
                     chunk_text,
-                    offset as u32,
+                    offset as u64,
                     seq,
                 ));
                 seq += 1;
@@ -163,7 +163,7 @@ mod tests {
 
         // Check sequence numbers
         for (i, chunk) in chunks.iter().enumerate() {
-            assert_eq!(chunk.seq, i as u32);
+            assert_eq!(chunk.sequence, i as u32);
         }
     }
 

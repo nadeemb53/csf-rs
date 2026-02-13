@@ -11,7 +11,6 @@ pub use index::{IndexConfig, PersistentHnswIndex, SharedPersistentIndex};
 use cfs_core::{Chunk, CfsError, Document, Edge, EdgeKind, Embedding, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
@@ -431,10 +430,10 @@ impl GraphStore {
         let chunk_id_bytes: Vec<u8> = row.get(1)?;
         let vector_bytes: Vec<u8> = row.get(2)?;
         let model_hash_bytes: Vec<u8> = row.get(3)?;
-        let dim: i32 = row.get(4)?;
+        let _dim: i32 = row.get(4)?;
         let l2_norm: f32 = row.get(5).unwrap_or(0.0);
 
-        let id = Uuid::from_slice(&id_bytes).expect("invalid uuid");
+        let _id = Uuid::from_slice(&id_bytes).expect("invalid uuid");
         let chunk_id = Uuid::from_slice(&chunk_id_bytes).expect("invalid uuid");
         let mut model_hash = [0u8; 32];
         model_hash.copy_from_slice(&model_hash_bytes);

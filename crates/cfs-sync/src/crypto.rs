@@ -140,12 +140,13 @@ impl Default for CryptoEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfs_core::Hlc;
     use uuid::Uuid;
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let engine = CryptoEngine::new();
-        let diff = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), 0);
+        let diff = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), 0, Hlc::new(1000, [0u8; 16]));
         
         let encrypted = engine.encrypt_diff(&diff).unwrap();
         let decrypted = engine.decrypt_diff(&encrypted).unwrap();
@@ -156,7 +157,7 @@ mod tests {
     #[test]
     fn test_signature_verification() {
         let engine = CryptoEngine::new();
-        let diff = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), 0);
+        let diff = CognitiveDiff::empty([0u8; 32], Uuid::new_v4(), 0, Hlc::new(1000, [0u8; 16]));
         
         let mut encrypted = engine.encrypt_diff(&diff).unwrap();
         

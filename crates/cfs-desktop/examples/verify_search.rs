@@ -17,7 +17,7 @@ fn main() -> cfs_core::Result<()> {
     println!("Results found: {}", results.len());
     for (i, res) in results.iter().enumerate() {
         println!("  {}. [Score: {:.4}] {} -> {}", 
-            i + 1, res.score, res.doc_path.display(), res.chunk.text.trim());
+            i + 1, res.score, res.doc_path, res.chunk.text.trim());
     }
     
     Ok(())

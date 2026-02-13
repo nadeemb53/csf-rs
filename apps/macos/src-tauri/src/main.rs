@@ -95,7 +95,7 @@ async fn perform_query(state: State<'_, AppState>, text: String) -> Result<Vec<U
         Ok(results.into_iter().map(|r| UiSearchResult {
             text: r.chunk.text,
             score: r.score,
-            path: r.doc_path.to_string_lossy().into_owned(),
+            path: r.doc_path.clone(),
         }).collect())
     } else {
         Ok(vec![])
@@ -191,7 +191,7 @@ async fn get_document_chunks(state: State<'_, AppState>, doc_id: String) -> Resu
         Ok(results.into_iter().map(|r| UiSearchResult {
             text: r.chunk.text,
             score: r.score,
-            path: r.doc_path.to_string_lossy().into_owned(),
+            path: r.doc_path.clone(),
         }).collect())
     } else {
         Ok(vec![])

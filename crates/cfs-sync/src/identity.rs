@@ -7,7 +7,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Signature};
 use hkdf::Hkdf;
 use rand::RngCore;
 use sha2::Sha256;
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
