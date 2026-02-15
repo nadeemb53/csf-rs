@@ -146,6 +146,8 @@ impl GraphStore {
 
                     Ok(Document {
                         id,
+                        path_id: Uuid::nil(), // computed from path
+
                         path: std::path::PathBuf::from(path_str),
                         hash,
                         hierarchical_hash,
@@ -182,6 +184,8 @@ impl GraphStore {
 
                     Ok(Document {
                         id,
+                        path_id: Uuid::nil(), // computed from path
+
                         path: std::path::PathBuf::from(path_str),
                         hash,
                         hierarchical_hash,
@@ -247,6 +251,8 @@ impl GraphStore {
 
                 Ok(Document {
                     id,
+                    path_id: Uuid::nil(), // computed from path
+
                     path: std::path::PathBuf::from(path_str),
                     hash,
                     hierarchical_hash,
@@ -997,14 +1003,20 @@ pub struct GraphStats {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn fresh_store() -> GraphStore {
+        let temp_dir = TempDir::new().unwrap();
+        GraphStore::open(temp_dir.path().join("test.db").to_str().unwrap()).unwrap()
+    }
 
     #[test]
     fn test_document_roundtrip() {
-        let mut store = GraphStore::in_memory().unwrap();
-        
+        let mut store = fresh_store();
+
         let doc = Document::new(PathBuf::from("test.md"), b"Hello, world!", 12345);
         store.insert_document(&doc).unwrap();
-        
+
         let retrieved = store.get_document(doc.id).unwrap().unwrap();
         assert_eq!(retrieved.id, doc.id);
         assert_eq!(retrieved.path, doc.path);
@@ -1013,22 +1025,24 @@ mod tests {
 
     #[test]
     fn test_chunk_operations() {
-        let mut store = GraphStore::in_memory().unwrap();
-        
+        let mut store = fresh_store();
+
         let doc = Document::new(PathBuf::from("test.md"), b"Content", 0);
         store.insert_document(&doc).unwrap();
-        
+
+        // Text is now canonicalized (trailing newline added)
         let chunk = Chunk::new(doc.id, "Test chunk text".to_string(), 0, 0);
         store.insert_chunk(&chunk).unwrap();
-        
+
         let chunks = store.get_chunks_for_doc(doc.id).unwrap();
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].text, "Test chunk text");
+        // Text is canonicalized
+        assert_eq!(chunks[0].text, "Test chunk text\n");
     }
 
     #[test]
     fn test_embedding_and_search() {
-        let mut store = GraphStore::in_memory().unwrap();
+        let mut store = fresh_store();
 
         let doc = Document::new(PathBuf::from("test.md"), b"Content", 0);
         store.insert_document(&doc).unwrap();
@@ -1049,14 +1063,14 @@ mod tests {
 
     #[test]
     fn test_edge_operations() {
-        let mut store = GraphStore::in_memory().unwrap();
-        
+        let mut store = fresh_store();
+
         let source = Uuid::new_v4();
         let target = Uuid::new_v4();
         let edge = Edge::new(source, target, EdgeKind::DocToChunk);
-        
+
         store.add_edge(&edge).unwrap();
-        
+
         let edges = store.get_edges(source).unwrap();
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].target, target);
@@ -1064,26 +1078,26 @@ mod tests {
 
     #[test]
     fn test_merkle_root() {
-        let mut store = GraphStore::in_memory().unwrap();
-        
+        let mut store = fresh_store();
+
         let root1 = store.compute_merkle_root().unwrap();
-        
+
         let doc = Document::new(PathBuf::from("test.md"), b"Hello", 0);
         store.insert_document(&doc).unwrap();
-        
+
         let root2 = store.compute_merkle_root().unwrap();
-        
+
         // Roots should be different after adding content
         assert_ne!(root1, root2);
     }
 
     #[test]
     fn test_stats() {
-        let mut store = GraphStore::in_memory().unwrap();
-        
+        let mut store = fresh_store();
+
         let doc = Document::new(PathBuf::from("test.md"), b"Content", 0);
         store.insert_document(&doc).unwrap();
-        
+
         let stats = store.stats().unwrap();
         assert_eq!(stats.documents, 1);
         assert_eq!(stats.chunks, 0);

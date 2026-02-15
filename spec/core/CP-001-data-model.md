@@ -56,9 +56,10 @@ A **Document** represents an ingested file in the substrate.
 
 ```
 Document {
-    id:              ID          // Deterministic identifier (BLAKE3-16)
-    path:            String      // Original filesystem path
-    content_hash:    [u8; 32]    // BLAKE3 hash of file contents
+    id:              ID          // Deterministic identifier (BLAKE3-16 of content_hash)
+    path_id:         ID          // Deterministic identifier for file path (for change detection)
+    path:            String      // Original filesystem path (for display/retrieval)
+    content_hash:    [u8; 32]   // BLAKE3 hash of file contents
     hierarchical_hash: [u8; 32]  // BLAKE3 hash of all chunk hashes
     mtime:           i64         // Unix timestamp (milliseconds)
     size_bytes:      u64         // File size in bytes
@@ -68,11 +69,21 @@ Document {
 
 #### Identity Derivation
 
-The Document ID MUST be derived deterministically:
+The Document ID is **content-based** - identical content always produces identical ID:
 
 ```
 document_id = generate_id(content_hash)
 ```
+
+The Path ID is **path-based** - enables tracking file moves/renames without content changes:
+
+```
+path_id = generate_id(path.as_bytes())  // Canonicalized path
+```
+
+**Rationale**:
+- `id`: Enables content deduplication across different paths
+- `path_id`: Enables detecting when the same path has different content (modification)
 
 #### Hierarchical Hash
 
@@ -112,15 +123,16 @@ Embedding {
     id:              ID          // Deterministic identifier (BLAKE3-16)
     chunk_id:        ID          // Source chunk reference
     vector:          [i16; N]    // Embedding vector (i16 quantization)
-    model_hash:      [u8; 32]    // BLAKE3 hash of model identifier
-    l2_norm:         f32         // Precomputed L2 norm for similarity
+    model_hash:      [u8; 32]    // BLAKE3 hash of model manifest
+    embedding_version: u32       // Version counter for re-embedding scenarios
+    l2_norm:         i64         // Precomputed L2 norm squared (integer for determinism)
 }
 ```
 
 #### Identity Derivation
 
 ```
-embedding_id = generate_id(chunk_id || model_hash)
+embedding_id = generate_id(chunk_id || model_hash || embedding_version.to_le_bytes())
 ```
 
 #### Vector Format
@@ -147,10 +159,10 @@ A **Chunk** represents a semantic unit of text extracted from a document.
 #### Schema
 ```rust
 struct Chunk {
-    id:              ID,         // generate_id(doc_id || sequence || text)
+    id:              ID,         // generate_id(doc_id || sequence) - STABLE across re-chunking
     document_id:     ID,         // Parent document
-    text:            String,     // Valid UTF-8
-    text_hash:       [u8; 32],   // BLAKE3(text)
+    text:            String,     // Valid UTF-8 (canonicalized)
+    text_hash:       [u8; 32], // BLAKE3(canonicalized_text) - for content verification
     byte_offset:     u64,        // Start position in source document
     byte_length:     u64,        // Length in bytes
     sequence:        u32,        // Order in document (0-indexed)
@@ -159,15 +171,17 @@ struct Chunk {
 
 #### Identity Derivation
 ```rust
+// STABLE ID: chunk identity is independent of text content
+// This ensures re-chunking with different parameters doesn't change IDs
 chunk_id = generate_id(
     document_id +
-    sequence.to_le_bytes() +
-    text.as_bytes()
+    sequence.to_le_bytes()
 )
 ```
 
 **Changes from V0**:
-- **Composite Identity**: Includes `document_id` and `sequence` to prevent collisions between identical text in different documents.
+- **Stable Identity**: Chunk ID no longer includes text, making it stable across re-chunking operations
+- **Content Verification**: `text_hash` field provides cryptographic verification of chunk content
 - **Deduplication**: Chunks are **NOT** globally deduplicated. "Introduction" in Doc A is distinct from "Introduction" in Doc B. This simplifies graph edges and provenance.
 
 ### 5. Edge
@@ -219,12 +233,99 @@ StateRoot {
 
 #### Merkle Root Computation
 
-State roots are computed using a BLAKE3 Merkle Tree over all sorted entities.
+State roots are computed using a **binary Merkle Tree** with BLAKE3, enabling efficient proof generation and verification.
 
-1.  **Sort**: All entities are sorted by their deterministic ID.
-2.  **Leaf Hash**: Each entity is hashed with its type-specific fields.
-3.  **Tree Build**: Leaves are hashed in pairs (BLAKE3) up to a single root.
-4.  **State Composition**: The final State Root hash is `BLAKE3(doc_root || chunk_root || emb_root || edge_root)`.
+##### Algorithm
+
+```
+function compute_merkle_root(entities: Vec<Entity>) -> [u8; 32]:
+    // 1. Sort entities by ID (deterministic order)
+    sorted = entities.sort_by(|a, b| a.id.cmp(b.id))
+
+    // 2. Compute leaf hashes
+    leaves = sorted.map(|e| BLAKE3(e.to_canonical_bytes()))
+
+    // 3. Build tree bottom-up (binary)
+    return merkle_tree(leaves)
+
+function merkle_tree(leaves: Vec<[u8; 32]>) -> [u8; 32]:
+    if leaves.len() == 0:
+        return BLAKE3(b"empty")
+
+    if leaves.len() == 1:
+        return leaves[0]
+
+    // Pair up leaves and hash
+    next_level = []
+    for i in range(0, leaves.len(), 2):
+        if i + 1 < leaves.len():
+            // Two children: hash(left || right)
+            parent = BLAKE3(leaves[i] || leaves[i+1])
+        else:
+            // Odd leaf: hash(leaf || leaf) - duplicate for perfect tree
+            parent = BLAKE3(leaves[i] || leaves[i])
+        next_level.push(parent)
+
+    return merkle_tree(next_level)
+```
+
+##### Entity Canonical Bytes
+
+Each entity type has a deterministic serialization for hashing:
+
+```
+// Document
+doc.to_canonical_bytes():
+    return id || content_hash || hierarchical_hash
+
+// Chunk
+chunk.to_canonical_bytes():
+    return id || text_hash
+
+// Embedding
+emb.to_canonical_bytes():
+    return id || vector_bytes || model_hash
+
+// Edge
+edge.to_canonical_bytes():
+    return source_id || target_id || kind_as_byte || weight_bytes
+```
+
+##### State Root Composition
+
+The final state root combines all entity roots:
+
+```
+function compute_state_root(
+    docs: Vec<Document>,
+    chunks: Vec<Chunk>,
+    embeddings: Vec<Embedding>,
+    edges: Vec<Edge>
+) -> [u8; 32]:
+    doc_root = merkle_tree(docs.map(|d| d.to_canonical_bytes()))
+    chunk_root = merkle_tree(chunks.map(|c| c.to_canonical_bytes()))
+    emb_root = merkle_tree(embeddings.map(|e| e.to_canonical_bytes()))
+    edge_root = merkle_tree(edges.map(|e| e.to_canonical_bytes()))
+
+    // Final composition
+    return BLAKE3(doc_root || chunk_root || emb_root || edge_root)
+```
+
+##### Merkle Proofs
+
+For partial verification (sync scenarios):
+
+```
+struct MerkleProof {
+    leaf_hash: [u8; 32],
+    path: Vec<MerkleNode>,  // Sibling hashes from leaf to root
+    position: u64,           // Position in tree (for verification)
+}
+
+function generate_proof(entities: Vec<Entity>, target_id: ID) -> MerkleProof:
+    // Returns proof that target_id exists in tree
+    // Useful for sync verification without full state transfer
+```
 
 See `CP-002` logic for precise node construction.
 
