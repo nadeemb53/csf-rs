@@ -25,7 +25,7 @@ pub use chunk::Chunk;
 pub use embedding::Embedding;
 pub use edge::{Edge, EdgeKind};
 pub use state::StateRoot;
-pub use diff::{CognitiveDiff, DiffMetadata};
+pub use diff::{CognitiveDiff, DiffMetadata, ExecutionTrace, Operation, EmbeddingInput};
 pub use error::{CfsError, Result};
 pub use context_assembler::{
     ContextAssembler, ScoredChunk, AssembledContext, ContextMetadata, TokenBudget, ContextChunk,

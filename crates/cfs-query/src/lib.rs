@@ -422,6 +422,9 @@ impl QueryEngine {
     }
 
     /// Search for relevant chunks using a hybrid (semantic + lexical) approach
+    ///
+    /// Uses integer Reciprocal Rank Fusion (RRF) per CFS-003 §7 for deterministic results:
+    /// Score(d) = 1,000,000 / (k + rank(d))
     pub fn search(&self, query: &str, k: usize) -> Result<Vec<SearchResult>> {
         info!("Hybrid search for: '{}'", query);
 
@@ -451,30 +454,38 @@ impl QueryEngine {
             })
         };
 
-        // 3. Merge Results using Reciprocal Rank Fusion (RRF)
-        // Score = \sum_{r \in R} \frac{1}{60 + rank(r)}
-        // IMPORTANT: Standardize on Chunk IDs before merging to avoid duplicates
-        let mut scores: HashMap<Uuid, f32> = HashMap::new();
+        // 3. Merge Results using Integer Reciprocal Rank Fusion (RRF)
+        // Per CFS-003 §7: Score(d) = 1,000,000 / (k + rank(d))
+        // This uses integer math for deterministic results across platforms
+        const RRF_K: u64 = 60;
+        const RRF_SCALE: u64 = 1_000_000;
+
+        // Use u64 for scores to ensure integer determinism
+        let mut scores: std::collections::HashMap<Uuid, u64> = std::collections::HashMap::new();
 
         {
             let graph = self.graph.lock().unwrap();
-            
+
             for (i, (emb_id, _)) in semantic_results.iter().enumerate() {
                 if let Ok(Some(chunk_id)) = graph.get_chunk_id_for_embedding(*emb_id) {
-                    let score = 1.0 / (60.0 + i as f32);
-                    *scores.entry(chunk_id).or_insert(0.0) += score;
+                    // Integer RRF: 1,000,000 / (60 + rank)
+                    let score = RRF_SCALE / (RRF_K + i as u64);
+                    *scores.entry(chunk_id).or_insert(0) += score;
                 }
             }
 
             for (i, (chunk_id, _)) in lexical_results.iter().enumerate() {
-                let score = 1.0 / (60.0 + i as f32);
-                *scores.entry(*chunk_id).or_insert(0.0) += score;
+                let score = RRF_SCALE / (RRF_K + i as u64);
+                *scores.entry(*chunk_id).or_insert(0) += score;
             }
         }
 
-        // Sort by fused score
-        let mut fused: Vec<(Uuid, f32)> = scores.into_iter().collect();
-        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by fused score (descending), then by chunk ID (ascending) for deterministic tiebreaking
+        let mut fused: Vec<(Uuid, u64)> = scores.into_iter().collect();
+        fused.sort_by(|a, b| {
+            b.1.cmp(&a.1) // Score descending
+                .then_with(|| a.0.cmp(&b.0)) // Chunk ID ascending for tiebreak
+        });
         fused.truncate(k);
 
         // 4. Retrieve chunks and docs
@@ -492,9 +503,12 @@ impl QueryEngine {
                 None => continue,
             };
 
+            // Convert to f32 for API compatibility (score is preserved proportionally)
+            let normalized_score = fused_score as f32 / (RRF_SCALE * 2) as f32;
+
             search_results.push(SearchResult {
                 chunk,
-                score: fused_score,
+                score: normalized_score,
                 doc_path: doc.path.to_string_lossy().to_string(),
             });
         }

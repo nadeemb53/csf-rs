@@ -139,6 +139,118 @@ impl PartialEq for CognitiveDiff {
 
 impl Eq for CognitiveDiff {}
 
+/// Input for embedding computation (for trace verification)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingInput {
+    /// Hash of the text that was embedded
+    pub text_hash: [u8; 32],
+    /// Hash of the model manifest used
+    pub model_hash: [u8; 32],
+}
+
+/// Execution trace for verified execution per CFS-003 §10.
+///
+/// This structure enables devices to verify each other's operations
+/// by providing a complete record of the state transition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionTrace {
+    /// The operation that was executed
+    pub operation: Operation,
+    /// Hash of the state before this operation
+    pub prev_state_root: [u8; 32],
+    /// Hash of the state after this operation
+    pub new_state_root: [u8; 32],
+
+    /// Subtree root for documents
+    pub document_subtree_root: [u8; 32],
+    /// Subtree root for chunks
+    pub chunk_subtree_root: [u8; 32],
+    /// Subtree root for embeddings
+    pub embedding_subtree_root: [u8; 32],
+    /// Subtree root for edges
+    pub edge_subtree_root: [u8; 32],
+
+    /// Embedding computation inputs (for verification)
+    pub embedding_inputs: Vec<EmbeddingInput>,
+    /// Embedding computation outputs (hashes of embeddings)
+    pub embedding_outputs: Vec<[u8; 32]>,
+
+    /// Timestamp when operation was executed
+    pub timestamp: Hlc,
+    /// Device that executed the operation
+    pub device_id: Uuid,
+    /// Signature of this trace (for non-repudiation)
+    pub signature: Vec<u8>,
+}
+
+impl ExecutionTrace {
+    /// Get signature as a fixed array (panics if not 64 bytes)
+    #[allow(dead_code)]
+    pub fn signature_array(&self) -> [u8; 64] {
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(&self.signature);
+        arr
+    }
+
+    /// Create from signature array
+    #[allow(dead_code)]
+    pub fn from_signature_array(arr: [u8; 64]) -> Self {
+        let sig = arr.to_vec();
+        Self {
+            operation: Operation::RemoveDocument {
+                document_id: Uuid::nil(),
+                timestamp: Hlc::zero([0u8; 16]),
+            },
+            prev_state_root: [0u8; 32],
+            new_state_root: [0u8; 32],
+            document_subtree_root: [0u8; 32],
+            chunk_subtree_root: [0u8; 32],
+            embedding_subtree_root: [0u8; 32],
+            edge_subtree_root: [0u8; 32],
+            embedding_inputs: Vec::new(),
+            embedding_outputs: Vec::new(),
+            timestamp: Hlc::zero([0u8; 16]),
+            device_id: Uuid::nil(),
+            signature: sig,
+        }
+    }
+}
+
+/// Operation types for deterministic state transitions
+/// Per CFS-003 §9.1
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Operation {
+    /// Add a document with its chunks and embeddings
+    AddDocument {
+        /// The document to add
+        document: Document,
+        /// Associated chunks
+        chunks: Vec<Chunk>,
+        /// Associated embeddings
+        embeddings: Vec<Embedding>,
+        /// Timestamp for ordering
+        timestamp: Hlc,
+    },
+    /// Remove a document (cascades to chunks/embeddings)
+    RemoveDocument {
+        /// ID of document to remove
+        document_id: Uuid,
+        /// Timestamp for ordering
+        timestamp: Hlc,
+    },
+    /// Update a document (remove then add atomically)
+    UpdateDocument {
+        /// ID of document to update
+        document_id: Uuid,
+        /// New chunks
+        new_chunks: Vec<Chunk>,
+        /// New embeddings
+        new_embeddings: Vec<Embedding>,
+        /// Timestamp for ordering
+        timestamp: Hlc,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

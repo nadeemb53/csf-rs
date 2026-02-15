@@ -738,24 +738,39 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Apply a cognitive diff to the graph store
+    /// Apply a cognitive diff to the graph store with conflict resolution.
+    ///
+    /// Per CFS-013 §13: Uses Last-Writer-Wins (LWW) with Hybrid Logical Clocks (HLC)
+    /// for deterministic conflict resolution:
+    /// 1. Compare HLC timestamps - later one wins
+    /// 2. If timestamps equal, use hash tiebreaker (lexicographically higher wins)
     pub fn apply_diff(&mut self, diff: &cfs_core::CognitiveDiff) -> Result<()> {
+        // Get the latest state root for comparison
+        let latest_root = self.get_latest_root()?;
+
+        // Check for conflicts and resolve using LWW with HLC
+        let (resolved_diff, has_conflict) = self.resolve_conflicts(diff, latest_root.as_ref())?;
+
+        if has_conflict {
+            info!("Conflict detected and resolved using LWW/HLC");
+        }
+
         let tx = self.db.transaction().map_err(|e| CfsError::Database(e.to_string()))?;
 
-        // 1. Remove items (Delete)
-        for id in &diff.removed_doc_ids {
+        // 1. Remove items (Delete) - order matters for foreign keys
+        for id in &resolved_diff.removed_doc_ids {
             tx.execute("DELETE FROM documents WHERE id = ?1", params![id.as_bytes().as_slice()])
                 .map_err(|e| CfsError::Database(e.to_string()))?;
         }
-        for id in &diff.removed_chunk_ids {
+        for id in &resolved_diff.removed_chunk_ids {
             tx.execute("DELETE FROM chunks WHERE id = ?1", params![id.as_bytes().as_slice()])
                  .map_err(|e| CfsError::Database(e.to_string()))?;
         }
-        for id in &diff.removed_embedding_ids {
+        for id in &resolved_diff.removed_embedding_ids {
             tx.execute("DELETE FROM embeddings WHERE id = ?1", params![id.as_bytes().as_slice()])
                  .map_err(|e| CfsError::Database(e.to_string()))?;
         }
-        for (source, target, kind) in &diff.removed_edges {
+        for (source, target, kind) in &resolved_diff.removed_edges {
             tx.execute(
                 "DELETE FROM edges WHERE source = ?1 AND target = ?2 AND kind = ?3",
                 params![source.as_bytes().as_slice(), target.as_bytes().as_slice(), *kind as i32],
@@ -764,9 +779,9 @@ impl GraphStore {
         }
 
         // 2. Add/Update items (Insert or Replace)
-        for doc in &diff.added_docs {
+        for doc in &resolved_diff.added_docs {
              tx.execute(
-                "INSERT OR REPLACE INTO documents (id, path, hash, hierarchical_hash, mtime, size, mime_type) 
+                "INSERT OR REPLACE INTO documents (id, path, hash, hierarchical_hash, mtime, size, mime_type)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     doc.id.as_bytes().as_slice(),
@@ -780,7 +795,7 @@ impl GraphStore {
             ).map_err(|e| CfsError::Database(e.to_string()))?;
         }
 
-        for chunk in &diff.added_chunks {
+        for chunk in &resolved_diff.added_chunks {
             tx.execute(
                 "INSERT OR REPLACE INTO chunks (id, doc_id, text, byte_offset, byte_length, sequence, text_hash)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -796,10 +811,10 @@ impl GraphStore {
             ).map_err(|e| CfsError::Database(e.to_string()))?;
         }
 
-        for emb in &diff.added_embeddings {
+        for emb in &resolved_diff.added_embeddings {
              let vector_bytes: Vec<u8> = emb.vector.iter().flat_map(|f| f.to_le_bytes()).collect();
              tx.execute(
-                "INSERT OR REPLACE INTO embeddings (id, chunk_id, vector, model_hash, dim) 
+                "INSERT OR REPLACE INTO embeddings (id, chunk_id, vector, model_hash, dim)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     emb.id.as_bytes().as_slice(),
@@ -811,7 +826,7 @@ impl GraphStore {
             ).map_err(|e| CfsError::Database(e.to_string()))?;
         }
 
-        for edge in &diff.added_edges {
+        for edge in &resolved_diff.added_edges {
             tx.execute(
                 "INSERT OR REPLACE INTO edges (source, target, kind, weight) VALUES (?1, ?2, ?3, ?4)",
                 params![
@@ -822,27 +837,27 @@ impl GraphStore {
                 ],
             ).map_err(|e| CfsError::Database(e.to_string()))?;
         }
-        
+
         // 3. Update State Root
         tx.execute(
-             "INSERT OR REPLACE INTO state_roots (hash, parent, hlc_wall_ms, hlc_counter, hlc_node_id, device_id, signature, seq) 
+             "INSERT OR REPLACE INTO state_roots (hash, parent, hlc_wall_ms, hlc_counter, hlc_node_id, device_id, signature, seq)
               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
              params![
-                 diff.metadata.new_root.as_slice(),
-                 if diff.metadata.prev_root == [0u8; 32] { None } else { Some(diff.metadata.prev_root.as_slice()) },
-                 diff.metadata.hlc.wall_ms as i64,
-                 diff.metadata.hlc.counter as i32,
-                 diff.metadata.hlc.node_id.as_slice(),
-                 diff.metadata.device_id.as_bytes().as_slice(),
+                 resolved_diff.metadata.new_root.as_slice(),
+                 if resolved_diff.metadata.prev_root == [0u8; 32] { None } else { Some(resolved_diff.metadata.prev_root.as_slice()) },
+                 resolved_diff.metadata.hlc.wall_ms as i64,
+                 resolved_diff.metadata.hlc.counter as i32,
+                 resolved_diff.metadata.hlc.node_id.as_slice(),
+                 resolved_diff.metadata.device_id.as_bytes().as_slice(),
                  [0u8; 64].as_slice(),
-                 diff.metadata.seq as i64,
+                 resolved_diff.metadata.seq as i64,
              ],
          ).map_err(|e| CfsError::Database(e.to_string()))?;
 
         tx.commit().map_err(|e| CfsError::Database(e.to_string()))?;
 
         // 4. Update HNSW Index (Best effort for added embeddings)
-        for emb in &diff.added_embeddings {
+        for emb in &resolved_diff.added_embeddings {
             let vec_f32 = emb.to_f32();
             let _ = self.hnsw.insert(emb.id, vec_f32);
         }
@@ -851,6 +866,71 @@ impl GraphStore {
         self.hnsw.invalidate();
 
         Ok(())
+    }
+
+    /// Resolve conflicts using Last-Writer-Wins with HLC timestamps.
+    ///
+    /// Per CFS-013 §13:
+    /// 1. Operation with later HLC timestamp wins
+    /// 2. If timestamps equal, operation with lexicographically higher hash wins
+    ///
+    /// Returns (resolved_diff, had_conflict)
+    fn resolve_conflicts(
+        &self,
+        incoming_diff: &cfs_core::CognitiveDiff,
+        current_root: Option<&cfs_core::StateRoot>,
+    ) -> Result<(cfs_core::CognitiveDiff, bool)> {
+        let mut has_conflict = false;
+
+        // If no existing state, no conflict resolution needed
+        let current_root = match current_root {
+            Some(root) => root,
+            None => return Ok((incoming_diff.clone(), false)),
+        };
+
+        // Compare HLC timestamps
+        let incoming_hlc = &incoming_diff.metadata.hlc;
+        let current_hlc = &current_root.hlc;
+
+        // Check if incoming is newer (primary resolution)
+        let incoming_is_newer = incoming_hlc > current_hlc;
+
+        // If current is newer, we should NOT apply incoming (conflict - current wins)
+        if !incoming_is_newer && incoming_hlc != current_hlc {
+            info!(
+                "Conflict: incoming diff HLC {:?} is older than current {:?}",
+                incoming_hlc, current_hlc
+            );
+            has_conflict = true;
+            // Return empty diff - current state wins
+            return Ok((cfs_core::CognitiveDiff::empty(
+                current_root.hash,
+                incoming_diff.metadata.device_id,
+                incoming_diff.metadata.seq,
+                incoming_diff.metadata.hlc.clone(),
+            ), has_conflict));
+        }
+
+        // If timestamps are equal, use hash tiebreaker (deterministic)
+        if incoming_hlc == current_hlc {
+            let incoming_hash = blake3::hash(&incoming_diff.metadata.new_root);
+            let current_hash = blake3::hash(&current_root.hash);
+
+            // Lexicographically larger hash wins
+            if incoming_hash.as_bytes() <= current_hash.as_bytes() {
+                info!("Conflict: equal HLC, current hash wins (tiebreaker)");
+                has_conflict = true;
+                return Ok((cfs_core::CognitiveDiff::empty(
+                    current_root.hash,
+                    incoming_diff.metadata.device_id,
+                    incoming_diff.metadata.seq,
+                    incoming_diff.metadata.hlc.clone(),
+                ), has_conflict));
+            }
+        }
+
+        // Incoming is newer or wins tiebreaker - apply it
+        Ok((incoming_diff.clone(), has_conflict))
     }
 
     /// Clear all data from the graph store (for fresh sync)
@@ -949,18 +1029,18 @@ mod tests {
     #[test]
     fn test_embedding_and_search() {
         let mut store = GraphStore::in_memory().unwrap();
-        
+
         let doc = Document::new(PathBuf::from("test.md"), b"Content", 0);
         store.insert_document(&doc).unwrap();
-        
+
         let chunk = Chunk::new(doc.id, "Test text".to_string(), 0, 0);
         store.insert_chunk(&chunk).unwrap();
-        
-        // Create a simple embedding
-        let vector = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+
+        // Create a 384-dimensional embedding (matching the index config)
+        let vector: Vec<f32> = (0..384).map(|i| (i as f32) * 0.01).collect();
         let emb = Embedding::new(chunk.id, &vector, [0u8; 32]);
         store.insert_embedding(&emb).unwrap();
-        
+
         // Search with same vector should return it
         let results = store.search(&vector, 1).unwrap();
         assert_eq!(results.len(), 1);

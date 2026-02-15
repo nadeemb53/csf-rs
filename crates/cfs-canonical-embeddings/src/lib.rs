@@ -56,6 +56,74 @@ pub mod tokens {
 }
 
 // ============================================================================
+// Include tokenizer and model data (downloaded at build time)
+// ============================================================================
+
+include!("tokenizer_data.rs");
+
+// ============================================================================
+// SoftFloat Implementation
+// ============================================================================
+
+mod softfloat;
+pub use softfloat::{l2_normalize_softfloat as normalize_softfloat, SoftFloat32, SoftFloat64};
+
+// ============================================================================
+// Tokenizer Implementation
+// ============================================================================
+
+mod tokenizer_impl;
+pub use tokenizer_impl::BertTokenizer;
+
+// ============================================================================
+// Model Implementation
+// ============================================================================
+
+mod model;
+use model::MiniLMModel;
+
+// ============================================================================
+// Tokenizer Output
+// ============================================================================
+
+/// Tokenizer output
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenOutput {
+    pub ids: Vec<u32>,
+    pub attention_mask: Vec<u32>,
+    pub type_ids: Vec<u32>,
+}
+
+/// Tokenizer - wrapper around BertTokenizer
+pub struct Tokenizer {
+    inner: BertTokenizer,
+}
+
+impl Tokenizer {
+    /// Create tokenizer from embedded tokenizer.json
+    pub fn new() -> Result<Self> {
+        let inner = BertTokenizer::new(TOKENIZER_JSON)?;
+        Ok(Self { inner })
+    }
+
+    /// Tokenize input text
+    pub fn tokenize(&self, text: &str) -> Result<TokenOutput> {
+        self.inner.tokenize(text)
+    }
+
+    /// Get vocabulary size
+    pub fn vocab_size(&self) -> usize {
+        self.inner.vocab_size()
+    }
+}
+
+impl Default for Tokenizer {
+    fn default() -> Self {
+        Self::new().expect("Failed to create tokenizer")
+    }
+}
+
+// ============================================================================
 // Model Manifest - Per CFS-010 §12
 // ============================================================================
 
@@ -79,7 +147,6 @@ impl ModelManifest {
         tokenizer_hash: [u8; 32],
         config_hash: [u8; 32],
     ) -> Self {
-        // Compute combined manifest hash: BLAKE3(weights || tokenizer || config)
         let mut hasher = blake3::Hasher::new();
         hasher.update(&weights_hash);
         hasher.update(&tokenizer_hash);
@@ -110,37 +177,18 @@ impl ModelManifest {
 // ============================================================================
 
 /// Generate a deterministic embedding from input text
-///
-/// Per CFS-010 §10:
-/// 1. Tokenize
-/// 2. Forward pass (model-dependent)
-/// 3. Mean pooling
-/// 4. SoftFloat L2 normalization
-/// 5. Deterministic i16 quantization
 pub fn generate_embedding(
     text: &str,
     tokenizer: &Tokenizer,
     model: &Model,
 ) -> Result<CanonicalEmbedding> {
-    // 1. Tokenize
-    let token_ids = tokenizer.tokenize(text)?;
-
-    // 2. Forward pass (returns hidden states)
-    let hidden_states = model.forward(&token_ids)?;
-
-    // 3. Mean pooling
-    let pooled = mean_pooling(&hidden_states, &token_ids.attention_mask);
-
-    // 4. SoftFloat L2 normalization (deterministic)
+    let token_output = tokenizer.tokenize(text)?;
+    let hidden_states = model.forward(&token_output.ids, &token_output.attention_mask)?;
+    let pooled = mean_pooling(&hidden_states, &token_output.attention_mask);
     let normalized = l2_normalize_softfloat(&pooled);
-
-    // 5. Deterministic quantization to i16
     let quantized = quantize_f32_to_i16(&normalized);
-
-    // 6. Compute embedding hash
     let embedding_hash = compute_embedding_hash(&quantized);
 
-    // 7. Create embedding
     let embedding = CanonicalEmbedding {
         vector: quantized,
         embedding_hash,
@@ -150,7 +198,7 @@ pub fn generate_embedding(
 }
 
 /// Mean pooling over token embeddings
-fn mean_pooling(hidden_states: &[[f32; EMBEDDING_DIM]], attention_mask: &[u32]) -> [f32; EMBEDDING_DIM] {
+fn mean_pooling(hidden_states: &[Vec<f32>], attention_mask: &[u32]) -> [f32; EMBEDDING_DIM] {
     let mut sum = [0.0f32; EMBEDDING_DIM];
     let mut count = 0.0f32;
 
@@ -177,69 +225,28 @@ fn mean_pooling(hidden_states: &[[f32; EMBEDDING_DIM]], attention_mask: &[u32]) 
 // ============================================================================
 
 /// L2 normalize using software float for deterministic results
-///
-/// **CRITICAL**: Uses software float to guarantee bit-exact results
-/// across x86, ARM, and WASM. Hardware FPU operations are PROHIBITED.
-///
-/// We implement our own SoftFloat-like operations to ensure determinism.
-/// This is simpler than depending on external softfloat crate with changing API.
+/// Uses true SoftFloat implementation for bit-exact results across platforms
 fn l2_normalize_softfloat(input: &[f32; EMBEDDING_DIM]) -> [f32; EMBEDDING_DIM] {
-    // Compute L2 norm using software float (deterministic)
-    let mut sum_sq: f64 = 0.0;
-    for &val in input {
-        let val_f64 = val as f64;
-        sum_sq += val_f64 * val_f64;
-    }
-
-    // Compute sqrt using f64 (more deterministic than f32)
-    let norm = sum_sq.sqrt();
-
-    // Normalize using software float
-    let mut result = [0.0f32; EMBEDDING_DIM];
-    if norm.is_nan() || norm == 0.0 {
-        // Return zeros for invalid input
-        return result;
-    }
-
-    for (i, &val) in input.iter().enumerate() {
-        let val_f64 = val as f64;
-        let normalized = val_f64 / norm;
-        result[i] = normalized as f32;
-    }
-
-    result
+    softfloat::l2_normalize_softfloat(input)
 }
 
 // ============================================================================
 // Deterministic Quantization - Per CFS-010 §9
 // ============================================================================
 
-/// Quantize f32 vector to i16 using deterministic rounding
-///
-/// Uses round_ties_even with dead-zone per spec:
-/// - Scale by 32767.0
-/// - Values near boundaries get dead-zone (rounded toward zero)
-/// - This prevents flip-flopping across platforms
 fn quantize_f32_to_i16(input: &[f32; EMBEDDING_DIM]) -> [i16; EMBEDDING_DIM] {
     let mut result = [0i16; EMBEDDING_DIM];
 
     for (i, &val) in input.iter().enumerate() {
-        // Scale to i16 range
         let scaled = val * 32767.0;
-
-        // Apply dead-zone for values near rounding boundaries
-        // This prevents cross-platform variance
         let dead_zone = 0.5;
 
         if scaled > dead_zone {
-            // Round away from zero for positive
             result[i] = round_half_to_even(scaled) as i16;
         } else if scaled < -dead_zone {
-            // Round toward zero for negative (dead-zone)
             result[i] = round_half_to_even(scaled.abs()) as i16;
             result[i] = -result[i];
         } else {
-            // Within dead-zone - round toward zero
             result[i] = scaled.trunc() as i16;
         }
     }
@@ -247,10 +254,6 @@ fn quantize_f32_to_i16(input: &[f32; EMBEDDING_DIM]) -> [i16; EMBEDDING_DIM] {
     result
 }
 
-/// Round half to even (Banker's rounding)
-///
-/// This is deterministic across all platforms.
-/// 0.5 rounds to nearest even: 0.5→0, 1.5→2, 2.5→2, 3.5→4
 fn round_half_to_even(x: f32) -> f32 {
     let floor = x.floor();
     let diff = x - floor;
@@ -260,7 +263,6 @@ fn round_half_to_even(x: f32) -> f32 {
     } else if diff > 0.5 {
         floor + 1.0
     } else {
-        // Exactly 0.5 - round to even
         if floor as i32 % 2 == 0 {
             floor
         } else {
@@ -269,9 +271,7 @@ fn round_half_to_even(x: f32) -> f32 {
     }
 }
 
-/// Compute embedding hash (BLAKE3 of quantized vector)
 fn compute_embedding_hash(vector: &[i16; EMBEDDING_DIM]) -> [u8; 32] {
-    // Convert to little-endian bytes
     let bytes: Vec<u8> = vector.iter()
         .flat_map(|&v| v.to_le_bytes())
         .collect();
@@ -283,35 +283,24 @@ fn compute_embedding_hash(vector: &[i16; EMBEDDING_DIM]) -> [u8; 32] {
 // Canonical Embedding
 // ============================================================================
 
-/// Canonical embedding with quantized i16 vector
-///
-/// Per CFS-010: stored as i16 for deterministic integer dot product
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalEmbedding {
-    /// Quantized embedding vector (i16, scale = 32767)
     pub vector: [i16; EMBEDDING_DIM],
-
-    /// BLAKE3 hash of the vector bytes
     pub embedding_hash: [u8; 32],
 }
 
 impl CanonicalEmbedding {
-    /// Create embedding from pre-quantized values
     pub fn from_quantized(vector: [i16; EMBEDDING_DIM]) -> Self {
         let embedding_hash = compute_embedding_hash(&vector);
         Self { vector, embedding_hash }
     }
 
-    /// Get the vector as f32 (approximate, for display only)
     pub fn to_f32(&self) -> Vec<f32> {
         self.vector.iter()
             .map(|&v| v as f32 / 32767.0)
             .collect()
     }
 
-    /// Compute integer dot product (deterministic)
-    ///
-    /// Per CFS-003 §5.1: Uses integer arithmetic for deterministic similarity
     pub fn dot_product(&self, other: &CanonicalEmbedding) -> i64 {
         let mut sum: i64 = 0;
         for i in 0..EMBEDDING_DIM {
@@ -320,54 +309,74 @@ impl CanonicalEmbedding {
         sum
     }
 
-    /// Compute L2 norm from quantized vector
     pub fn l2_norm(&self) -> i64 {
         let mut sum: i64 = 0;
         for &v in &self.vector {
             sum += (v as i64) * (v as i64);
         }
-        // sqrt approximation - for similarity we can use squared distance
         sum
     }
 }
 
 // ============================================================================
-// Placeholder Structures (to be implemented)
+// Model - MiniLM-L6-v2 Implementation
 // ============================================================================
 
-/// Tokenizer placeholder - to be implemented in tokenizer.rs
-pub struct Tokenizer {
-    // Vocabulary and merges will be embedded
-}
-
-impl Tokenizer {
-    /// Tokenize input text
-    pub fn tokenize(&self, text: &str) -> Result<TokenOutput> {
-        // TODO: Implement BPE tokenization
-        // For now, return placeholder
-        Err(CanonicalError::Tokenizer("Tokenizer not implemented".into()))
-    }
-}
-
-/// Model placeholder - to be implemented in model.rs
+/// The MiniLM model for generating embeddings
 pub struct Model {
-    // Model weights will be loaded from embedded ONNX or custom format
+    inner: MiniLMModel,
+    config: model::ModelConfig,
 }
 
 impl Model {
-    /// Forward pass through transformer
-    pub fn forward(&self, tokens: &TokenOutput) -> Result<Vec<[f32; EMBEDDING_DIM]>> {
-        // TODO: Implement transformer forward pass
-        Err(CanonicalError::Inference("Model not implemented".into()))
+    /// Create a new model from embedded weights
+    pub fn new() -> Result<Self> {
+        let config = model::ModelConfig::from_config_json(CONFIG_JSON)?;
+        let inner = MiniLMModel::new(MODEL_DATA, config.clone())?;
+        Ok(Self { inner, config })
+    }
+
+    /// Forward pass - returns mean-pooled hidden states as embedding
+    pub fn forward(&self, input_ids: &[u32], attention_mask: &[u32]) -> Result<Vec<Vec<f32>>> {
+        // Get pooled output (mean pooling)
+        let seq_len = input_ids.len();
+
+        // Embeddings
+        let token_type_ids: Vec<u32> = input_ids.iter().map(|_| 0).collect();
+        let mut hidden_states = self.inner.embeddings.forward(input_ids, &token_type_ids);
+
+        // Encoder layers
+        hidden_states = self.inner.encoder.forward(&hidden_states, None);
+
+        // Mean pooling
+        let mut sum = vec![0.0f32; EMBEDDING_DIM];
+        let mut count = 0.0f32;
+
+        for (i, hs) in hidden_states.iter().enumerate() {
+            if i < attention_mask.len() && attention_mask[i] == 1 {
+                for (j, val) in hs.iter().enumerate() {
+                    sum[j] += val;
+                }
+                count += 1.0;
+            }
+        }
+
+        if count > 0.0 {
+            for val in &mut sum {
+                *val /= count;
+            }
+        }
+
+        // Return as single vector per sequence (for now we only support batch=1)
+        // The embedding for each position would be the same due to mean pooling
+        Ok(vec![sum])
     }
 }
 
-/// Tokenizer output
-#[derive(Debug, Clone)]
-pub struct TokenOutput {
-    pub ids: Vec<u32>,
-    pub attention_mask: Vec<u32>,
-    pub type_ids: Vec<u32>,
+impl Default for Model {
+    fn default() -> Self {
+        Self::new().expect("Failed to create model")
+    }
 }
 
 // ============================================================================
@@ -381,21 +390,18 @@ mod tests {
     #[test]
     fn test_round_half_to_even() {
         assert_eq!(round_half_to_even(0.4), 0.0);
-        assert_eq!(round_half_to_even(0.5), 0.0);  // 0.5 -> 0 (even)
+        assert_eq!(round_half_to_even(0.5), 0.0);
         assert_eq!(round_half_to_even(0.6), 1.0);
-        assert_eq!(round_half_to_even(1.5), 2.0);   // 1.5 -> 2 (even)
-        assert_eq!(round_half_to_even(2.5), 2.0);   // 2.5 -> 2 (even)
-        assert_eq!(round_half_to_even(3.5), 4.0);   // 3.5 -> 4 (even)
+        assert_eq!(round_half_to_even(1.5), 2.0);
+        assert_eq!(round_half_to_even(2.5), 2.0);
+        assert_eq!(round_half_to_even(3.5), 4.0);
     }
 
     #[test]
     fn test_quantize_deterministic() {
-        // Same input should always produce same output
         let input = [0.1234f32; EMBEDDING_DIM];
-
         let result1 = quantize_f32_to_i16(&input);
         let result2 = quantize_f32_to_i16(&input);
-
         assert_eq!(result1, result2);
     }
 
@@ -404,7 +410,6 @@ mod tests {
         let vector = [100i16; EMBEDDING_DIM];
         let hash1 = compute_embedding_hash(&vector);
         let hash2 = compute_embedding_hash(&vector);
-
         assert_eq!(hash1, hash2);
     }
 
@@ -412,21 +417,48 @@ mod tests {
     fn test_dot_product_deterministic() {
         let emb1 = CanonicalEmbedding::from_quantized([100i16; EMBEDDING_DIM]);
         let emb2 = CanonicalEmbedding::from_quantized([200i16; EMBEDDING_DIM]);
-
         let dot1 = emb1.dot_product(&emb2);
         let dot2 = emb1.dot_product(&emb2);
-
         assert_eq!(dot1, dot2);
     }
 
     #[test]
     fn test_l2_norm() {
-        // Unit vector quantized: all values = 32767 / 384 ≈ 85
-        // For test, use simple values
         let emb = CanonicalEmbedding::from_quantized([100i16; EMBEDDING_DIM]);
         let norm = emb.l2_norm();
-
-        // Expected: 100^2 * 384 = 3,840,000
         assert_eq!(norm, 3840000);
+    }
+
+    #[test]
+    fn test_tokenizer_creation() {
+        let tokenizer = Tokenizer::new();
+        assert!(tokenizer.is_ok());
+        let tok = tokenizer.unwrap();
+        assert!(tok.vocab_size() > 0);
+    }
+
+    #[test]
+    fn test_tokenizer_deterministic() {
+        let tokenizer = Tokenizer::new().unwrap();
+
+        let result1 = tokenizer.tokenize("Hello world").unwrap();
+        let result2 = tokenizer.tokenize("Hello world").unwrap();
+
+        assert_eq!(result1.ids, result2.ids);
+    }
+
+    #[test]
+    fn test_tokenizer_special_tokens() {
+        let tokenizer = Tokenizer::new().unwrap();
+        let result = tokenizer.tokenize("hi").unwrap();
+
+        // Should have [CLS] at start
+        assert_eq!(result.ids[0], tokens::CLS);
+    }
+
+    #[test]
+    fn test_model_creation() {
+        let model = Model::new();
+        assert!(model.is_ok());
     }
 }
