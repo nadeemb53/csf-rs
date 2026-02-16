@@ -1006,8 +1006,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn fresh_store() -> GraphStore {
-        let temp_dir = TempDir::new().unwrap();
-        GraphStore::open(temp_dir.path().join("test.db").to_str().unwrap()).unwrap()
+        GraphStore::in_memory().unwrap()
     }
 
     #[test]
@@ -1036,7 +1035,7 @@ mod tests {
 
         let chunks = store.get_chunks_for_doc(doc.id).unwrap();
         assert_eq!(chunks.len(), 1);
-        // Text is canonicalized
+        // Text is canonicalized (has trailing newline)
         assert_eq!(chunks[0].text, "Test chunk text\n");
     }
 

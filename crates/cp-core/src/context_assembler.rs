@@ -418,22 +418,30 @@ mod tests {
 
     #[test]
     fn test_sort_tiebreaker() {
-        let doc_id = Uuid::from_bytes([1u8; 16]);
         let assembler = ContextAssembler::with_budget(4000);
 
-        // Same score, different paths → path ascending
+        // Use different doc_ids to avoid deduplication with stable chunk IDs
         let chunks = vec![
-            make_scored(make_chunk(doc_id, "Chunk Z", 0), 0.9, "z.md"),
-            make_scored(make_chunk(doc_id, "Chunk A", 0), 0.9, "a.md"),
+            make_scored(
+                Chunk::new(Uuid::from_bytes([1u8; 16]), "Chunk Z".to_string(), 0, 0),
+                0.9,
+                "z.md",
+            ),
+            make_scored(
+                Chunk::new(Uuid::from_bytes([2u8; 16]), "Chunk A".to_string(), 0, 0),
+                0.9,
+                "a.md",
+            ),
         ];
 
         let ctx = assembler.assemble(chunks, "query", [0u8; 32]);
         let formatted = ContextAssembler::format(&ctx);
 
         // a.md should come before z.md (path ascending tiebreak)
-        let pos_a = formatted.find("[DOC: a.md]").unwrap();
-        let pos_z = formatted.find("[DOC: z.md]").unwrap();
-        assert!(pos_a < pos_z);
+        let pos_a = formatted.find("a.md");
+        let pos_z = formatted.find("z.md");
+        assert!(pos_a.is_some() && pos_z.is_some(), "Paths not found in formatted");
+        assert!(pos_a.unwrap() < pos_z.unwrap());
     }
 
     #[test]

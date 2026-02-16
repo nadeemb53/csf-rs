@@ -1,109 +1,79 @@
 # Canon Protocol
 
-A deterministic, verifiable semantic state substrate for AI cognition and multi-agent reasoning.
+Canon Protocol is infrastructure for AI memory that you can trust. It's a way for AI agents to store knowledge, verify each other's state, and work together without needing to trust a central authority.
 
----
+Think of it like git, but for AI knowledge instead of code. In git, you can see exactly what changed, verify the history, and collaborate with others even if you're offline. Canon Protocol brings those same properties to AI knowledge management.
 
-## What problem are we solving?
+The core idea is simple: **make everything deterministic and verifiable by default.**
 
-AI agents today cannot verify each other's reasoning state, produce opaque context and hallucinated outputs, and have no shared semantic truth. Canon Protocol solves this by making state **deterministic, reproducible, and cryptographically verifiable**.
+Instead of storing data and hoping it's consistent, everything in Canon Protocol is:
+- **Content-addressed**: Each piece of knowledge is identified by a cryptographic hash of its content, not by a filename or ID. If the content changes, the address changes.
+- **Cryptographically committed**: There's always a "state root"—a single hash that represents everything in the system. If you have the root, you can verify nothing was tampered with.
+- **Reproducible**: The same input always produces the same output.
+- **Local-first**: Everything runs on your device. Your AI's memory is your data. You can sync it elsewhere.
 
----
+## What It Looks Like In Practice
 
-## Key Concepts
+Here's what you can do with Canon Protocol:
 
-- **Canonicalization:** consistent byte-level normalization of all artifacts
-- **Content-addressed state:** everything is hash-identified
-- **Deterministic retrieval:** no nondeterministic floating point or host discrepancies
-- **Verifiable execution traces:** replay proofs for agent state
-- **Merkle roots for semantic state:** portable and auditable semantic snapshots
+**Build AI memory that doesn't forget.** Feed documents in, get embeddings out, and everything is automatically chunked, indexed, and stored. When your AI needs context, it searches semantically—not by keywords, but by meaning.
 
----
+**Verify agent reasoning.** An agent can show its "state root" and another agent can verify it. "You said you read the contract at timestamp X. Prove it. Here's the hash. Here's the Merkle path to the root. Check it yourself."
 
-## Use Cases
+**Sync across devices with zero trust.** You have an iPad and a Mac. Your AI memory syncs between them. The relay server that moves the data can't read a single byte—it's encrypted with keys that never leave your devices.
 
-- Trustless agent verification
-- Collaborative AI knowledge networks
-- Verifiable agent markets
-- Auditable retrieval and provenance
+**Collaborate with other agents.** Two agents can exchange knowledge, verify each other's contributions, and merge their understanding—all without either having to trust the other.
 
----
+## What Canon Protocol Isn't
 
-## How It Works
+It's not an AI model. It doesn't generate text, write code, or have conversations. It's the substrate that other AI systems build on top of.
 
-Canon Protocol is composed of:
+It's not a general database. You can't just store arbitrary data and query it however you want. The schema is opinionated toward semantic knowledge management—documents, chunks, embeddings, relationships.
 
-- **spec/** – protocol documents defining canonical behavior
-- **crates/** – Rust implementation of core libraries
-- **examples/** – illustrative workflows (not core deliverables yet)
+It's not a cloud service by default. Everything runs locally. If you want to sync across devices, you need your own relay or you run one yourself.
 
----
+It's not finished. This is a working implementation, not a polished product. The specs are there, the core works, but there's more to build.
 
-## Core Principles
+## Where It Could Go
 
-- **Deterministic**
-  Identical inputs produce identical state roots, chunk IDs, and retrieval results. This is enforced via **SoftFloat** arithmetic and **Canonical Inference**.
+This is where it gets interesting.
 
-- **Content-addressed**
-  All state is identified by cryptographic hashes, enabling verification and deduplication.
+**Verifiable AI Markets.** Imagine agents that sell their knowledge. You want to buy "everything this agent knows about tax law." You can verify exactly what you're getting before paying—the state root proves it.
 
-- **Verifiable**
-  Every state transition can be proven and replayed.
+**Agent Accountability.** AI makes a decision that causes a problem. With Canon Protocol, you can trace back exactly what the agent knew at decision time. Not logs it wrote down—cryptographically proven state.
 
-- **Local-first**
-  All operations run locally without external dependencies.
+**Personal AI That You Own.** Your AI assistant understands your files, your emails, your life. With Canon Protocol, that memory is truly yours. You can back it up, verify it, move it to a new device, and no company has access to it.
 
----
+**Federated AI Networks.** Multiple organizations, each with their own AI, sharing knowledge selectively. Each can verify what others contributed. No single point of trust.
 
-## Architecture & Specifications
+None of this is guaranteed—it's just what's possible when AI memory is built on verifiable foundations.
 
-### Core Layer
+## The Implementation
 
-- **[CP-001: Data Model](./spec/core/CP-001-data-model.md)** — Canonical data types (Document, Chunk, Embedding), UUIDv5 identity generation, and Merkle tree construction.
-- **[CP-002: Storage Engine](./spec/core/CP-002-storage-engine.md)** — Hybrid persistence using SQLite for metadata and HNSW for transient vector indices.
-- **[CP-003: Determinism](./spec/core/CP-003-determinism.md)** — Mathematical rules for SoftFloat arithmetic and Canonical Inference to guarantee bit-exact synchronization.
+Canon Protocol is written in Rust. The implementation is modular:
 
-### Protocol Layer
+- **cp-core**: The data models, hashing, and cryptographic primitives
+- **cp-graph**: SQLite + HNSW hybrid storage
+- **cp-embeddings**: Local embedding generation, CPU-only
+- **cp-parser**: Document parsing
+- **cp-query**: Hybrid search (semantic + keyword) and context assembly
+- **cp-sync**: Merkle diffing and encrypted state synchronization
+- **cp-relay-client**: Client for syncing through blind relay servers
+- **cp-inference-mobile**: Local LLM inference for on-device AI
 
-- **[CP-010: Embedding](./spec/protocol/CP-010-embedding-protocol.md)** — Deterministic vector generation using quantization and provenance tracking.
-- **[CP-011: Indexing](./spec/protocol/CP-011-indexing-protocol.md)** — Document ingestion, chunking strategies, and index maintenance.
-- **[CP-012: Retrieval](./spec/protocol/CP-012-retrieval-protocol.md)** — Hybrid search (Semantic + Lexical), RRF fusion, and Integer Dot Product scoring.
-- **[CP-013: Synchronization](./spec/protocol/CP-013-sync-protocol.md)** — Encrypted, blind synchronization using Merkle diffs and signatures.
+The `spec/` directory contains the protocol specifications—exactly how everything works, what the guarantees are, and what conformant implementations must do.
 
-### Application Layer
+## Getting Started
 
-- **[CP-020: Intelligence Interface](./spec/application/CP-020-intelligence-interface.md)** — strict read-only contract for LLM integration.
-- **[CP-021: Context Assembly](./spec/application/CP-021-context-assembly.md)** — Deterministic context window construction for RAG.
+If you want to play with it:
 
----
+```bash
+# Build everything
+cargo build
 
-## Repository Structure
+# Run the tests
+cargo test
 
-### Core Crates (`/crates`)
-
-- `cp-core` — Canonical data models, hashing, cryptographic primitives
-- `cp-parser` — Document parsing and chunking (PDF, Markdown, Text)
-- `cp-embeddings` — Local embedding generation (CPU-only)
-- `cp-graph` — SQLite + HNSW hybrid storage engine
-- `cp-query` — Hybrid retrieval, RRF fusion, and context assembly
-- `cp-inference-mobile` — Local LLM inference engine (`llama.cpp` + GGUF)
-- `cp-sync` — Merkle tree diffing, encryption, and state convergence
-- `cp-relay-client` — HTTP client for encrypted blob synchronization
-- `cp-desktop` — Desktop-specific ingestion and watcher logic
-- `cp-mobile` — C FFI for iOS/Android integration
-- `cp-desktop-cli` — Command-line interface for graph inspection
-- `cp-tests` — End-to-end and cross-platform validation tests
-
-### Examples (`/examples`)
-
-- `examples/macos` — macOS Tauri UI wrapper
-- `examples/ios` — iOS SwiftUI application
-
-### Relay Server (`/relay`)
-
-- `relay/cp-relay-server` — Blind Axum-based encrypted blob storage
-
-### Infrastructure & Tools
-
-- `scripts/` — Build and deployment scripts (e.g., iOS cross-compilation)
-- `test_corpus/` — Curated dataset for system validation and RAG testing
+# Try the CLI (if you want to poke around)
+cargo run -p cp-desktop-cli -- --help
+```
