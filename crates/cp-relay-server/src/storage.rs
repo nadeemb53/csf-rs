@@ -1,11 +1,21 @@
 //! Storage backend for the relay server
 //!
 //! Per CP-013: Stores encrypted diffs by (sender_device_id, target_device_id, sequence)
+//! Also stores device registrations for the pairing protocol
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Mutex;
 
 use crate::SignedDiffJson;
+
+/// Device record for paired devices
+pub struct DeviceRecord {
+    pub device_id: String,
+    pub public_key: String,
+    pub display_name: Option<String>,
+    pub created_at: i64,
+    pub last_seen: Option<i64>,
+}
 
 /// SQLite-based storage for encrypted diffs
 /// Uses a Mutex to ensure thread safety with Axum's async handlers
@@ -47,6 +57,18 @@ impl Storage {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_diffs_target_sequence
              ON diffs(target_device_id, sequence)",
+            [],
+        )?;
+
+        // Device registration table for pairing protocol
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS devices (
+                device_id TEXT PRIMARY KEY,
+                public_key TEXT NOT NULL,
+                display_name TEXT,
+                created_at INTEGER NOT NULL,
+                last_seen INTEGER
+            )",
             [],
         )?;
 
@@ -160,6 +182,50 @@ impl Storage {
 
         Ok(deleted)
     }
+
+    /// Register a new device for the pairing protocol
+    pub fn register_device(
+        &self,
+        device_id: &str,
+        public_key: &str,
+        display_name: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO devices (device_id, public_key, display_name, created_at, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![device_id, public_key, display_name, now, now],
+        )?;
+        Ok(())
+    }
+
+    /// Get device by ID
+    pub fn get_device(&self, device_id: &str) -> Result<Option<DeviceRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT device_id, public_key, display_name, created_at, last_seen
+             FROM devices WHERE device_id = ?1"
+        )?;
+
+        let device = stmt
+            .query_row(params![device_id], |row| {
+                Ok(DeviceRecord {
+                    device_id: row.get(0)?,
+                    public_key: row.get(1)?,
+                    display_name: row.get(2)?,
+                    created_at: row.get(3)?,
+                    last_seen: row.get(4)?,
+                })
+            })
+            .optional()?;
+
+        Ok(device)
+    }
 }
 
 #[cfg(test)]
@@ -226,5 +292,20 @@ mod tests {
         let diffs = storage.get_diffs_since("recipient456", 0).unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].sequence, 3);
+    }
+
+    #[test]
+    fn test_device_registration() {
+        let storage = Storage::open(":memory:").unwrap();
+
+        // Register a device
+        storage.register_device("device123", "pubkey_abc", "MacBook Pro").unwrap();
+
+        // Verify device exists
+        let device = storage.get_device("device123").unwrap();
+        assert!(device.is_some());
+        let device = device.unwrap();
+        assert_eq!(device.device_id, "device123");
+        assert_eq!(device.display_name, Some("MacBook Pro".to_string()));
     }
 }
